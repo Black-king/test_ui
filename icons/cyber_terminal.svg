@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00ffff;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#0099cc;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1a1a2e;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="screen" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#16213e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0a0a0a;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- 外框 -->
+  <rect x="4" y="4" width="40" height="40" rx="8" ry="8" fill="url(#bg)" stroke="#00ffff" stroke-width="2"/>
+  
+  <!-- 屏幕 -->
+  <rect x="8" y="8" width="32" height="24" rx="2" ry="2" fill="url(#screen)" stroke="#00ffff" stroke-width="1"/>
+  
+  <!-- 终端文字效果 -->
+  <text x="12" y="18" font-family="monospace" font-size="6" fill="#00ffff">$&gt;</text>
+  <rect x="20" y="15" width="8" height="1" fill="#00ffff"/>
+  <rect x="12" y="21" width="12" height="1" fill="#ff6b6b"/>
+  <rect x="12" y="24" width="16" height="1" fill="#00ffff"/>
+  <rect x="12" y="27" width="10" height="1" fill="#ff6b6b"/>
+  
+  <!-- 键盘 -->
+  <rect x="8" y="34" width="32" height="8" rx="2" ry="2" fill="#1a1a2e" stroke="#00ffff" stroke-width="1"/>
+  <rect x="10" y="36" width="2" height="2" rx="0.5" fill="#00ffff"/>
+  <rect x="13" y="36" width="2" height="2" rx="0.5" fill="#00ffff"/>
+  <rect x="16" y="36" width="2" height="2" rx="0.5" fill="#00ffff"/>
+  <rect x="19" y="36" width="2" height="2" rx="0.5" fill="#00ffff"/>
+  <rect x="22" y="36" width="2" height="2" rx="0.5" fill="#00ffff"/>
+  <rect x="25" y="36" width="2" height="2" rx="0.5" fill="#00ffff"/>
+  <rect x="28" y="36" width="2" height="2" rx="0.5" fill="#00ffff"/>
+  <rect x="31" y="36" width="2" height="2" rx="0.5" fill="#00ffff"/>
+  <rect x="34" y="36" width="2" height="2" rx="0.5" fill="#00ffff"/>
+  <rect x="37" y="36" width="2" height="2" rx="0.5" fill="#00ffff"/>
+  
+  <!-- 发光效果 -->
+  <circle cx="24" cy="24" r="20" fill="none" stroke="#00ffff" stroke-width="0.5" opacity="0.3"/>
+</svg>
