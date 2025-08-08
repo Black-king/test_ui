@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
@@ -13,16 +14,31 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout
                              QLineEdit, QComboBox, QFormLayout, QMessageBox, QProgressBar,
                              QScrollArea, QFrame, QSplitter, QTabWidget, QToolButton, QMenu,
                              QAction, QListWidget, QListWidgetItem, QInputDialog, QGraphicsOpacityEffect,
-                             QDesktopWidget)
+                             QDesktopWidget, QShortcut)
 from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QSize, QTimer, QProcess, QPropertyAnimation, 
                           QEasingCurve, QPoint, QRect, QEvent, QObject, QRectF)
 from PyQt5.QtGui import (QIcon, QFont, QTextCursor, QColor, QPalette, QLinearGradient, QBrush, 
-                         QPainter, QPixmap, QFontDatabase, QPen, QRadialGradient)
+                         QPainter, QPixmap, QFontDatabase, QPen, QRadialGradient, QKeySequence)
 import random
 import math
 
-# 配置文件路径
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+def get_app_base_dir() -> str:
+    """返回运行时可写的基础目录。
+    - 开发态：使用源码所在目录
+    - 打包(onefile)后：使用可执行文件所在目录（安装目录），避免写到临时解包目录导致重启丢失
+    """
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包后的可执行文件路径
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+# 配置文件路径（统一指向可写目录）
+APP_BASE_DIR = get_app_base_dir()
+CONFIG_FILE = os.path.join(APP_BASE_DIR, 'config.json')
+UI_SETTINGS_FILE = os.path.join(APP_BASE_DIR, 'ui_settings.json')
+
+# 全局动画开关（为稳定优先，默认关闭）
+ANIMATIONS_ENABLED = False
 
 # 默认命令配置
 DEFAULT_COMMANDS = [
@@ -79,7 +95,29 @@ class ParticleEffect(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         
         self.time = 0  # 用于动画时间计算
+        # 可定制的调色板与背景色，随主题变化
+        self.custom_colors = None  # List[Tuple[int,int,int]]
+        self.background_qcolor = QColor(10, 10, 20)
         # 初始化粒子效果
+        self.init_particles()
+    
+    def set_effect(self, effect_type: str, colors: list = None, background: QColor = None):
+        """切换动效类型并可选更新调色板与背景色。会重建粒子。"""
+        self.effect_type = effect_type
+        if colors is not None:
+            self.custom_colors = colors
+        if background is not None:
+            self.background_qcolor = background
+        self.particles.clear()
+        self.init_particles()
+    
+    def set_palette(self, colors: list = None, background: QColor = None):
+        """仅更新调色板与背景色，并重建粒子。"""
+        if colors is not None:
+            self.custom_colors = colors
+        if background is not None:
+            self.background_qcolor = background
+        self.particles.clear()
         self.init_particles()
     
     def init_particles(self):
@@ -93,7 +131,7 @@ class ParticleEffect(QWidget):
     
     def init_floating_orbs(self):
         """初始化漂浮光球效果"""
-        colors = [
+        colors = self.custom_colors or [
             (100, 200, 255),  # 蓝色
             (255, 100, 200),  # 粉色
             (100, 255, 150),  # 绿色
@@ -120,7 +158,7 @@ class ParticleEffect(QWidget):
     
     def init_wave_ripples(self):
         """初始化波纹效果"""
-        colors = [
+        colors = self.custom_colors or [
             (50, 150, 255),   # 蓝色
             (100, 255, 200),  # 青绿色
             (150, 100, 255),  # 紫色
@@ -147,7 +185,7 @@ class ParticleEffect(QWidget):
         center_x = (self.width() or 800) / 2
         center_y = (self.height() or 600) / 2
         
-        colors = [
+        colors = self.custom_colors or [
             (255, 100, 100),  # 红色
             (100, 255, 100),  # 绿色
             (100, 100, 255),  # 蓝色
@@ -235,8 +273,8 @@ class ParticleEffect(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
-        # 设置背景为深色
-        painter.fillRect(self.rect(), QColor(10, 10, 20))
+        # 使用主题适配的背景色
+        painter.fillRect(self.rect(), self.background_qcolor)
         
         if self.effect_type == 'floating_orbs':
             self.draw_floating_orbs(painter)
@@ -342,7 +380,7 @@ class CommandThread(QThread):
         
     def run(self):
         try:
-            self.output_signal.emit(f"执行命令: {self.command}\n")
+            # 不主动输出额外换行，由 UI 端在提示命令后决定是否换行
             
             # 创建进程
             self.process = QProcess()
@@ -397,13 +435,15 @@ class CommandThread(QThread):
             self.process.kill()
 
 # 主窗口类
-class HDCCommandManager(QMainWindow):
+class CommandManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.commands = []
         self.command_thread = None
         self.current_theme = 'light'  # 默认主题
         self.init_themes()
+        # 读取UI偏好（如主题）
+        self.load_ui_settings()
         self.init_ui()
         self.load_config()
         
@@ -451,6 +491,34 @@ class HDCCommandManager(QMainWindow):
                 'terminal_border': '#00d4aa',
                 'terminal_text': '#ffffff',
                 'accent_color': '#00d4aa'
+            },
+            'nord': {
+                'name': '❄️ NORD',
+                'window_bg': 'qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2E3440, stop:0.5 #3B4252, stop:1 #434C5E)',
+                'title_bg': 'qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5E81AC, stop:1 #88C0D0)',
+                'title_color': '#ECEFF4',
+                'button_bg': 'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #4C566A, stop:1 #3B4252)',
+                'button_border': '#88C0D0',
+                'button_hover': 'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #88C0D0, stop:1 #5E81AC)',
+                'button_text': '#ECEFF4',
+                'terminal_bg': '#2E3440',
+                'terminal_border': '#88C0D0',
+                'terminal_text': '#D8DEE9',
+                'accent_color': '#88C0D0'
+            },
+            'amoled': {
+                'name': '🖤 AMOLED',
+                'window_bg': '#000000',
+                'title_bg': 'qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #121212, stop:1 #000000)',
+                'title_color': '#FFFFFF',
+                'button_bg': 'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0A0A0A, stop:1 #000000)',
+                'button_border': '#12C2E9',
+                'button_hover': 'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #12C2E9, stop:1 #0ABCF1)',
+                'button_text': '#FFFFFF',
+                'terminal_bg': '#000000',
+                'terminal_border': '#12C2E9',
+                'terminal_text': '#E0E0E0',
+                'accent_color': '#12C2E9'
             }
         }
         
@@ -566,12 +634,14 @@ class HDCCommandManager(QMainWindow):
             }
         """)
         title_layout = QHBoxLayout(title_widget)
-        title_layout.setContentsMargins(25, 25, 25, 25)  # 增加内边距确保按钮上下边距一致
+        title_layout.setContentsMargins(20, 22, 20, 22)  # 调整内边距以统一视觉高度
         title_layout.setAlignment(Qt.AlignVCenter)  # 设置垂直居中对齐
+        # 标题栏控件统一高度，保证两侧等高
+        self.header_control_height = 56
         
-        # 主题切换按钮
+        # 主题切换按钮 + 下拉菜单
         self.theme_button = QPushButton(self.themes[self.current_theme]['name'] + " THEME")
-        # 初始样式将由apply_theme函数设置，这里只设置基本属性
+        self.theme_button.setCursor(Qt.PointingHandCursor)
         self.theme_button.setStyleSheet("""
             QPushButton {
                 font-size: 18px; 
@@ -580,27 +650,39 @@ class HDCCommandManager(QMainWindow):
                 font-family: 'Arial', 'Microsoft YaHei', sans-serif;
                 padding: 8px 16px;
                 border-radius: 8px;
+                min-height: 48px;
+                max-height: 48px;
             }
         """)
+        self.theme_button.setFixedHeight(self.header_control_height)
         self.theme_button.clicked.connect(self.switch_theme)
-        
-        # 将主题按钮放在左侧
+        theme_menu = QMenu(self)
+        # 主题菜单样式
+        theme_menu.setStyleSheet(self.get_menu_stylesheet(self.themes[self.current_theme]))
+        for theme_key, theme_cfg in self.themes.items():
+            action = QAction(theme_cfg['name'], self)
+            action.triggered.connect(lambda checked, k=theme_key: self.set_theme(k))
+            theme_menu.addAction(action)
+        self.theme_button.setMenu(theme_menu)
         title_layout.addWidget(self.theme_button)
         title_layout.addStretch()  # 添加弹性空间推动时间标签到右侧
         
         # 当前时间显示
         self.time_label = QLabel()
-        self.time_label.setStyleSheet("""
-            font-size: 18px; 
+        self.time_label.setStyleSheet(f"""
+            font-size: 20px; 
             font-weight: 700;
             color: #ffffff;
             background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2c3e50, stop:1 #34495e);
-            padding: 8px 16px;
+            padding: 10px 20px;
             border-radius: 8px;
             border: 2px solid #00ffff;
             font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+            min-height: {self.header_control_height}px;
+            max-height: {self.header_control_height}px;
         """)
         self.time_label.setAlignment(Qt.AlignCenter)  # 设置文本居中对齐
+        self.time_label.setFixedHeight(self.header_control_height)
         self.update_time()
         
         # 创建定时器更新时间
@@ -630,7 +712,7 @@ class HDCCommandManager(QMainWindow):
         """)
         main_layout.addWidget(splitter)
         
-        # 左侧面板 - 命令按钮区域
+        # 左侧面板 - 命令按钮区域（含搜索）
         left_panel = QWidget()
         left_panel.setObjectName("leftPanel")
         # 初始化时使用当前主题的样式
@@ -688,7 +770,21 @@ class HDCCommandManager(QMainWindow):
         commands_header_layout.addWidget(self.commands_count, alignment=Qt.AlignCenter)
         commands_header_layout.addStretch()
         
+        # 搜索框
+        search_row = QWidget()
+        search_row_layout = QHBoxLayout(search_row)
+        search_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("搜索命令名称或内容...")
+        self.search_input.textChanged.connect(self.filter_commands)
+        search_icon = QLabel("🔎")
+        search_row_layout.addWidget(search_icon)
+        search_row_layout.addWidget(self.search_input)
+        # 快捷键 Ctrl+F 聚焦搜索
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=self.focus_search)
+
         left_layout.addWidget(commands_header_widget)
+        left_layout.addWidget(search_row)
         
         # 命令按钮网格布局
         self.commands_grid = QGridLayout()
@@ -735,7 +831,7 @@ class HDCCommandManager(QMainWindow):
         scroll_area.setWidget(scroll_content)
         left_layout.addWidget(scroll_area)
         
-        # 添加管理按钮
+        # 添加管理按钮与提示
         manage_btn = QPushButton("SYSTEM CONFIG")
         manage_btn.setIcon(self.create_icon("settings"))
         manage_btn.setIconSize(QSize(16, 16))
@@ -767,6 +863,9 @@ class HDCCommandManager(QMainWindow):
         manage_btn.clicked.connect(self.show_command_manager)
         manage_btn.setCursor(Qt.PointingHandCursor)
         left_layout.addWidget(manage_btn)
+        hint = QLabel("右键命令可 快速运行/编辑/删除/复制")
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        left_layout.addWidget(hint)
         
         # 右侧面板 - 终端输出区域
         right_panel = QWidget()
@@ -901,17 +1000,20 @@ class HDCCommandManager(QMainWindow):
         # 状态栏
         self.statusBar().showMessage("就绪")
         
-        # 显示窗口并添加淡入效果
-        self.setWindowOpacity(0.0)  # 初始透明度为0
+        # 显示窗口
         self.show()
-        
-        # 创建淡入动画
-        self.fade_in_animation = QPropertyAnimation(self, b"windowOpacity")
-        self.fade_in_animation.setDuration(500)  # 500毫秒
-        self.fade_in_animation.setStartValue(0.0)
-        self.fade_in_animation.setEndValue(1.0)
-        self.fade_in_animation.setEasingCurve(QEasingCurve.InOutQuad)
-        self.fade_in_animation.start()
+        # 主窗口淡入（受全局开关控制）
+        if ANIMATIONS_ENABLED:
+            # 使用图形淡入而非窗口淡入，避免任何系统误判
+            effect = QGraphicsOpacityEffect(self)
+            effect.setOpacity(0.0)
+            self.setGraphicsEffect(effect)
+            self.fade_in_animation = QPropertyAnimation(effect, b"opacity")
+            self.fade_in_animation.setDuration(400)
+            self.fade_in_animation.setStartValue(0.0)
+            self.fade_in_animation.setEndValue(1.0)
+            self.fade_in_animation.setEasingCurve(QEasingCurve.InOutQuad)
+            self.fade_in_animation.start()
         
         # 连接面板大小变化事件
         left_panel.resizeEvent = self.on_left_panel_resize
@@ -974,6 +1076,49 @@ class HDCCommandManager(QMainWindow):
                 fallback_path = os.path.join(icon_dir, 'terminal.ico')
                 if os.path.exists(fallback_path):
                     self.setWindowIcon(QIcon(fallback_path))
+
+    def load_ui_settings(self):
+        # 读取UI偏好（主题）
+        try:
+            if os.path.exists(UI_SETTINGS_FILE):
+                with open(UI_SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    theme_key = data.get('theme')
+                    if theme_key in self.themes:
+                        self.current_theme = theme_key
+        except Exception:
+            pass
+
+    def save_ui_settings(self):
+        # 保存UI偏好（主题）
+        try:
+            with open(UI_SETTINGS_FILE, 'w', encoding='utf-8') as f:
+                json.dump({'theme': self.current_theme}, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def focus_search(self):
+        if hasattr(self, 'search_input'):
+            self.search_input.setFocus()
+
+    def filter_commands(self, text):
+        keyword = (text or '').strip().lower()
+        self.filtered_commands = None
+        if keyword:
+            self.filtered_commands = [c for c in self.commands if keyword in c.get('name', '').lower() or keyword in c.get('command', '').lower()]
+        # 重建按钮网格
+        # 清除现有按钮（彻底销毁，避免无父级窗口）
+        try:
+            while self.commands_grid.count():
+                item = self.commands_grid.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.hide()
+                    widget.setParent(None)
+                    widget.deleteLater()
+        except Exception:
+            pass
+        self.add_new_command_buttons()
     
     def center_window(self):
         # 获取屏幕几何信息
@@ -1014,13 +1159,34 @@ class HDCCommandManager(QMainWindow):
     
     def update_command_buttons(self):
         # 清除现有按钮
-        for i in reversed(range(self.commands_grid.count())): 
-            widget = self.commands_grid.itemAt(i).widget()
-            if widget:
-                widget.setParent(None)
+        try:
+            while self.commands_grid.count():
+                item = self.commands_grid.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.hide()
+                    # 彻底销毁，避免变成无父级顶层窗口出现在任务栏
+                    widget.deleteLater()
+        except Exception:
+            # 兜底清理
+            for i in reversed(range(self.commands_grid.count())):
+                widget = self.commands_grid.itemAt(i).widget()
+                if widget:
+                    widget.hide()
+                    widget.deleteLater()
         
         # 立即添加新按钮
         self.add_new_command_buttons()
+        # 保证网格所在的滚动内容可见
+        try:
+            scroll_area = self.findChildren(QScrollArea)[0]
+            scroll_area.viewport().update()
+        except Exception:
+            pass
+
+        # 若存在搜索词，则维持过滤视图
+        if hasattr(self, 'search_input'):
+            self.filter_commands(self.search_input.text())
     
     def get_command_icon_symbol(self, command_name):
         """根据命令名称返回对应的Unicode符号图标"""
@@ -1047,8 +1213,14 @@ class HDCCommandManager(QMainWindow):
         themes_list = list(self.themes.keys())
         current_index = themes_list.index(self.current_theme)
         next_index = (current_index + 1) % len(themes_list)
-        self.current_theme = themes_list[next_index]
+        self.set_theme(themes_list[next_index])
+
+    def set_theme(self, theme_key):
+        if theme_key not in self.themes:
+            return
+        self.current_theme = theme_key
         self.apply_theme()
+        self.save_ui_settings()
         
     def apply_theme(self):
         """应用当前主题"""
@@ -1065,8 +1237,15 @@ class HDCCommandManager(QMainWindow):
                 font-family: 'Arial', 'Microsoft YaHei', sans-serif;
                 background: {theme['button_bg']};
                 border: 2px solid {theme['accent_color']};
-                padding: 8px 16px;
+                padding: 10px 18px;
                 border-radius: 8px;
+                min-height: {self.header_control_height}px;
+                max-height: {self.header_control_height}px;
+            }}
+            QPushButton::menu-indicator {{
+                image: none;
+                width: 0px;
+                height: 0px;
             }}
             QPushButton:hover {{
                 background: {theme['button_hover']};
@@ -1101,15 +1280,21 @@ class HDCCommandManager(QMainWindow):
         # 更新时间标签样式
         time_color = theme['button_text']
         self.time_label.setStyleSheet(f"""
-            font-size: 18px; 
+            font-size: 22px; 
             font-weight: 700;
             color: {time_color};
             background: {theme['button_bg']};
-            padding: 8px 16px;
+            padding: 10px 20px;
             border-radius: 8px;
             border: 2px solid {theme['accent_color']};
             font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+            min-height: {self.header_control_height}px;
+            max-height: {self.header_control_height}px;
         """)
+        # 保持标题栏两侧控件等高
+        if hasattr(self, 'header_control_height'):
+            self.theme_button.setFixedHeight(self.header_control_height)
+            self.time_label.setFixedHeight(self.header_control_height)
         
         # 更新命令按钮样式
         self.update_command_buttons()
@@ -1128,6 +1313,49 @@ class HDCCommandManager(QMainWindow):
         
         # 更新粒子效果显示
         self.update_particle_effects()
+
+        # 更新主题菜单当前项文本
+        if self.theme_button and self.theme_button.menu():
+            self.theme_button.setText(theme['name'] + " THEME")
+            # 重建菜单以反映顺序与可点击态
+            self.theme_button.menu().clear()
+            # 应用菜单样式，确保菜单项在各主题下可见
+            self.theme_button.menu().setStyleSheet(self.get_menu_stylesheet(theme))
+            for theme_key, theme_cfg in self.themes.items():
+                action = QAction(theme_cfg['name'], self)
+                action.setCheckable(True)
+                action.setChecked(theme_key == self.current_theme)
+                action.triggered.connect(lambda checked, k=theme_key: self.set_theme(k))
+                self.theme_button.menu().addAction(action)
+
+    def get_menu_stylesheet(self, theme):
+        # 通用 QMenu/QAction 样式，保证在深色/浅色/高对比主题下可读
+        text_color = theme.get('terminal_text', '#ffffff')
+        bg_color = theme.get('terminal_bg', '#222')
+        hover_bg = theme.get('button_hover', '#444')
+        border = theme.get('accent_color', '#00ffff')
+        return f"""
+            QMenu {{
+                background-color: {bg_color};
+                color: {text_color};
+                border: 2px solid {border};
+                padding: 4px;
+            }}
+            QMenu::item {{
+                padding: 6px 14px;
+                background-color: transparent;
+                color: {text_color};
+            }}
+            QMenu::item:selected {{
+                background: {hover_bg};
+                color: {text_color};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: {border};
+                margin: 4px 2px;
+            }}
+        """
     
     def update_status_bar_style(self):
         """更新状态栏样式"""
@@ -1245,6 +1473,22 @@ class HDCCommandManager(QMainWindow):
                         color: {theme['window_bg']};
                     }}
                 """)
+
+        # 搜索框样式
+        if hasattr(self, 'search_input'):
+            self.search_input.setStyleSheet(f"""
+                QLineEdit {{
+                    background-color: {theme['terminal_bg']};
+                    color: {theme['terminal_text']};
+                    border: 2px solid {theme['accent_color']};
+                    border-radius: 8px;
+                    padding: 6px 10px;
+                    font-size: 12px;
+                }}
+                QLineEdit:focus {{
+                    border-color: {theme['button_border']};
+                }}
+            """)
                 
     def update_right_panel_style(self):
         """更新右侧面板样式"""
@@ -1325,26 +1569,58 @@ class HDCCommandManager(QMainWindow):
         # light主题隐藏粒子效果，其他主题显示
         show_particles = self.current_theme != 'light'
         
+        # 为不同主题配置专属动效与配色
+        def apply_theme_effect(effect_widget: ParticleEffect, theme_key: str):
+            if not effect_widget:
+                return
+            if theme_key == 'nord':
+                # 冰蓝系极光/波纹
+                nord_colors = [
+                    (136, 192, 208),  # #88C0D0
+                    (94, 129, 172),   # #5E81AC
+                    (129, 161, 193),  # #81A1C1
+                    (216, 222, 233),  # #D8DEE9
+                ]
+                effect_widget.set_effect(
+                    effect_type='wave_ripples',
+                    colors=nord_colors,
+                    background=QColor(46, 52, 64, 160)  # 半透明NORD深蓝
+                )
+            elif theme_key == 'amoled':
+                # 纯黑底的霓虹漂浮光球
+                amoled_colors = [
+                    (18, 194, 233),  # 主色
+                    (0, 255, 153),   # 霓虹绿
+                    (255, 0, 153),   # 紫红
+                    (255, 255, 255), # 白
+                ]
+                effect_widget.set_effect(
+                    effect_type='floating_orbs',
+                    colors=amoled_colors,
+                    background=QColor(0, 0, 0, 180)  # 半透明纯黑
+                )
+            else:
+                # 其他主题使用默认配置
+                effect_widget.set_effect(effect_widget.effect_type)
+        
         if hasattr(self, 'left_particle_effect'):
             if show_particles:
                 self.left_particle_effect.show()
-                # 重新启动动画定时器
+                apply_theme_effect(self.left_particle_effect, self.current_theme)
                 if not self.left_particle_effect.timer.isActive():
                     self.left_particle_effect.timer.start(50)
             else:
                 self.left_particle_effect.hide()
-                # 停止动画定时器以节省资源
                 self.left_particle_effect.timer.stop()
         
         if hasattr(self, 'right_particle_effect'):
             if show_particles:
                 self.right_particle_effect.show()
-                # 重新启动动画定时器
+                apply_theme_effect(self.right_particle_effect, self.current_theme)
                 if not self.right_particle_effect.timer.isActive():
                     self.right_particle_effect.timer.start(50)
             else:
                 self.right_particle_effect.hide()
-                # 停止动画定时器以节省资源
                 self.right_particle_effect.timer.stop()
         
     def init_terminal_message(self):
@@ -1359,6 +1635,8 @@ class HDCCommandManager(QMainWindow):
             # Dark/Cyber主题的初始化消息
             self.terminal.append(f"<span style='color:{theme['terminal_text']}; font-weight:bold; font-size:18px;'>⚡ CYBER TERMINAL INITIALIZED v2.0</span>")
             self.terminal.append(f"<span style='color:{theme['accent_color']}; font-size:18px;'>" + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S') + " - 系统准备就绪，请选择要执行的命令...</span>")
+        # 提示搜索与快捷键
+        self.terminal.append(f"<span style='color:{theme['terminal_text']}; font-size:14px;'>提示：Ctrl+F 搜索命令，右键命令可进行更多操作。</span>")
     
     def update_terminal_style(self):
         """更新终端样式"""
@@ -1391,6 +1669,7 @@ class HDCCommandManager(QMainWindow):
                 font-weight: bold;
                 color: {theme['terminal_text']};
                 background-color: {theme['terminal_bg']};
+                height: 18px;
             }}
             QProgressBar::chunk {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -1403,14 +1682,15 @@ class HDCCommandManager(QMainWindow):
         # 更新命令计数
         self.commands_count.setText(f"({len(self.commands)} 个命令)")
         
-        # 添加命令按钮
-        for i, cmd in enumerate(self.commands):
+        # 添加命令按钮（按过滤结果）
+        commands_to_show = getattr(self, 'filtered_commands', None) or self.commands
+        for i, cmd in enumerate(commands_to_show):
             row, col = divmod(i, 3)
             
             # 创建按钮
             btn = QPushButton(cmd['name'])
             btn.setMinimumSize(110, 80)  # 调整按钮尺寸以显示更多
-            btn.setWindowOpacity(0.0)  # 初始透明度为0
+            # 稳定优先：不使用不透明度效果，直接显示
             
             # 为按钮添加符号图标
             icon_symbol = self.get_command_icon_symbol(cmd['name'])
@@ -1426,7 +1706,7 @@ class HDCCommandManager(QMainWindow):
                     border-radius: 12px;
                     padding: 15px 18px;
                     font-weight: 700;
-                    font-size: 14px;
+                    font-size: 18px;
                     font-family: 'Arial', 'Microsoft YaHei', sans-serif;
                     text-align: center;
                     min-height: 65px;
@@ -1453,19 +1733,42 @@ class HDCCommandManager(QMainWindow):
             
             # 连接点击事件
             btn.clicked.connect(lambda checked, cmd=cmd: self.execute_command(cmd))
+
+            # 右键菜单：运行/编辑/删除/复制
+            btn.setContextMenuPolicy(Qt.CustomContextMenu)
+            def show_ctx_menu(pos, button=btn, command=cmd):
+                menu = QMenu(button)
+                # 设置菜单样式以保证可读性
+                theme = self.themes[self.current_theme]
+                menu.setStyleSheet(self.get_menu_stylesheet(theme))
+                run_act = QAction("运行", menu)
+                edit_act = QAction("编辑", menu)
+                del_act = QAction("删除", menu)
+                copy_act = QAction("复制命令", menu)
+                run_act.triggered.connect(lambda: self.execute_command(command))
+                edit_act.triggered.connect(lambda: self.open_edit_dialog(command))
+                del_act.triggered.connect(lambda: self.delete_command_from_ui(command))
+                copy_act.triggered.connect(lambda: self.copy_command_text(command))
+                for a in (run_act, edit_act, del_act, copy_act):
+                    menu.addAction(a)
+                menu.exec_(button.mapToGlobal(pos))
+            btn.customContextMenuRequested.connect(show_ctx_menu)
             
             # 添加到网格
             self.commands_grid.addWidget(btn, row, col)
             
-            # 创建淡入动画
-            fade_in = QPropertyAnimation(btn, b"windowOpacity")
-            fade_in.setDuration(300)
-            fade_in.setStartValue(0.0)
-            fade_in.setEndValue(1.0)
-            fade_in.setEasingCurve(QEasingCurve.InOutQuad)
-            
-            # 延迟启动动画，使按钮依次淡入
-            QTimer.singleShot(i * 100, fade_in.start)
+            # 可选淡入动画，默认关闭以避免任何兼容性问题
+            if ANIMATIONS_ENABLED:
+                # 若用户开启动画，再使用图形效果淡入，避免任务栏问题
+                effect = QGraphicsOpacityEffect(btn)
+                effect.setOpacity(0.0)
+                btn.setGraphicsEffect(effect)
+                fade_in = QPropertyAnimation(effect, b"opacity")
+                fade_in.setDuration(300)
+                fade_in.setStartValue(0.0)
+                fade_in.setEndValue(1.0)
+                fade_in.setEasingCurve(QEasingCurve.InOutQuad)
+                QTimer.singleShot(i * 80, fade_in.start)
     
     def create_icon(self, icon_name):
         """创建图标，优先使用SVG，失败时使用备用方案"""
@@ -1689,10 +1992,11 @@ class HDCCommandManager(QMainWindow):
         self.progress_bar.setVisible(True)
         self.progress_bar.setFormat("正在执行命令 %p%")
         
-        # 添加命令执行提示到终端，使用主题颜色
+        # 添加命令执行提示到终端，使用主题颜色，并在其后加一空行，便于与输出分隔
         self.terminal.moveCursor(QTextCursor.End)
         prompt_color = current_theme['accent_color']
         self.terminal.append(f"<span style='color:{prompt_color}; font-weight:bold; font-size:18px;'>$ {command}</span>")
+        self.terminal.append("")
         self.terminal.moveCursor(QTextCursor.End)
         
         # 更新进度条动画
@@ -1711,6 +2015,40 @@ class HDCCommandManager(QMainWindow):
                 
         # 启动线程
         self.command_thread.start()
+
+    def copy_command_text(self, cmd):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(cmd.get('command', ''))
+        self.log_message("命令已复制到剪贴板", info=True)
+
+    def open_edit_dialog(self, cmd):
+        # 打开对话框并自动定位到指定命令进行编辑
+        dialog = CommandManagerDialog(self.commands, self)
+        def do_focus():
+            # 1) 切到列表页
+            tabs = dialog.findChild(QTabWidget)
+            if tabs:
+                tabs.setCurrentIndex(0)
+            # 2) 在列表中选中该命令
+            for i in range(dialog.command_list.count()):
+                item = dialog.command_list.item(i)
+                data = item.data(Qt.UserRole)
+                if data.get('name') == cmd.get('name') and data.get('command') == cmd.get('command'):
+                    dialog.command_list.setCurrentRow(i)
+                    break
+            # 3) 触发编辑
+            dialog.edit_command()
+        QTimer.singleShot(0, do_focus)
+        dialog.exec_()
+
+    def delete_command_from_ui(self, cmd):
+        # 根据名称和内容匹配删除
+        before = len(self.commands)
+        self.commands = [c for c in self.commands if not (c.get('name') == cmd.get('name') and c.get('command') == cmd.get('command'))]
+        if len(self.commands) != before:
+            self.save_config()
+            self.update_command_buttons()
+            self.log_message("命令已删除", info=True)
     
     def update_terminal(self, text):
         # 更新终端输出
@@ -1815,6 +2153,8 @@ class HDCCommandManager(QMainWindow):
         # 显示命令管理对话框
         dialog = CommandManagerDialog(self.commands, self)
         dialog.exec_()
+        # 关闭返回后刷新（防止子对话框变更未刷）
+        self.update_command_buttons()
 
 # 命令管理对话框
 class CommandManagerDialog(QDialog):
@@ -1823,6 +2163,8 @@ class CommandManagerDialog(QDialog):
     
     def __init__(self, commands, parent=None):
         super().__init__(parent)
+        # 去掉标题栏的问号按钮
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.commands = commands.copy()
         self.parent_window = parent
         self.init_ui()
@@ -1923,8 +2265,8 @@ class CommandManagerDialog(QDialog):
         
         # 对话框按钮
         buttons = QHBoxLayout()
-        save_btn = QPushButton("保存更改")
-        cancel_btn = QPushButton("取消")
+        save_btn = QPushButton("保存更改 (Ctrl+S)")
+        cancel_btn = QPushButton("取消 (Esc)")
         
         save_btn.clicked.connect(self.save_changes)
         cancel_btn.clicked.connect(self.reject)
@@ -1932,6 +2274,10 @@ class CommandManagerDialog(QDialog):
         buttons.addWidget(save_btn)
         buttons.addWidget(cancel_btn)
         layout.addLayout(buttons)
+
+        # 快捷键：保存 / 关闭
+        QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_changes)
+        QShortcut(QKeySequence("Esc"), self, activated=self.reject)
     
     def apply_theme(self):
         """根据父窗口主题应用样式"""
@@ -2301,6 +2647,7 @@ class CommandManagerDialog(QDialog):
         
         # 创建编辑对话框
         dialog = QDialog(self)
+        dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         dialog.setWindowTitle("编辑命令")
         dialog.setMinimumWidth(400)
         
@@ -2444,5 +2791,5 @@ class CommandManagerDialog(QDialog):
 # 程序入口
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = HDCCommandManager()
+    window = CommandManager()
     sys.exit(app.exec_())

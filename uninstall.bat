@@ -1,11 +1,11 @@
 @echo off
-echo 正在卸载HDC命令管理器...
+echo 正在卸载命令管理器...
 
-set INSTALL_DIR=%USERPROFILE%\HDCManager
+set INSTALL_DIR=%USERPROFILE%\CommandManager
 
-if exist "%USERPROFILE%\Desktop\HDC命令管理器.lnk" (
+if exist "%USERPROFILE%\Desktop\命令管理器.lnk" (
     echo 正在删除桌面快捷方式...
-    del "%USERPROFILE%\Desktop\HDC命令管理器.lnk"
+    del "%USERPROFILE%\Desktop\命令管理器.lnk"
 )
 
 if exist "%INSTALL_DIR%" (

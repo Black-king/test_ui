@@ -33,13 +33,13 @@ python main.py
 ### 打包为可执行文件
 
 1. 运行`build_app.bat`批处理文件
-2. 打包完成后，可执行文件位于`dist/HDCManager.exe`
+2. 打包完成后，可执行文件位于`dist/CommandManager.exe`
 
 ### 安装应用程序
 
 1. 运行`build_app.bat`批处理文件进行打包
 2. 运行`install.bat`批处理文件进行安装
-3. 安装程序会将应用程序安装到`%USERPROFILE%\HDCManager`目录下，并创建桌面快捷方式
+3. 安装程序会将应用程序安装到`%USERPROFILE%\CommandManager`目录下，并创建桌面快捷方式
 
 ### 卸载应用程序
 
@@ -115,5 +115,5 @@ python main.py
 │   ├── trash.svg       # 卸载图标
 │   └── ...             # 其他图标
 └── dist/               # 打包输出目录
-    └── HDCManager.exe  # 打包后的可执行文件
+    └── CommandManager.exe  # 打包后的可执行文件
 ```
