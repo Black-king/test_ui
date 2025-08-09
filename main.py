@@ -2251,7 +2251,14 @@ class CommandManager(QMainWindow):
                 return
             
             # 获取远程路径
-            remote_path, ok = QInputDialog.getText(self, "远程路径", "请输入远程设备上的路径:")
+            input_dialog = QInputDialog(self)
+            input_dialog.setWindowFlags(input_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+            input_dialog.setInputMode(QInputDialog.TextInput)
+            input_dialog.setWindowTitle("远程路径")
+            input_dialog.setLabelText("请输入远程设备上的路径:")
+            input_dialog.resize(400, 200)
+            ok = input_dialog.exec_()
+            remote_path = input_dialog.textValue()
             if not ok or not remote_path:
                 self.progress_bar.setVisible(False)
                 self.log_message("已取消文件上传", info=True)
@@ -2264,7 +2271,14 @@ class CommandManager(QMainWindow):
             
         elif cmd_type == 'download':
             # 获取远程文件路径
-            remote_path, ok = QInputDialog.getText(self, "远程文件", "请输入要下载的远程文件路径:")
+            input_dialog = QInputDialog(self)
+            input_dialog.setWindowFlags(input_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+            input_dialog.setInputMode(QInputDialog.TextInput)
+            input_dialog.setWindowTitle("远程文件")
+            input_dialog.setLabelText("请输入要下载的远程文件路径:")
+            input_dialog.resize(400, 200)
+            ok = input_dialog.exec_()
+            remote_path = input_dialog.textValue()
             if not ok or not remote_path:
                 self.progress_bar.setVisible(False)
                 self.log_message("已取消文件下载", info=True)
@@ -2288,14 +2302,21 @@ class CommandManager(QMainWindow):
             
             # 替换命令中的时间戳占位符
             cmd_content = cmd_content.replace('{timestamp}', timestamp)
-            self.log_message(f"截图将使用时间戳: {timestamp}", info=True)
+            self.log_message(f"截图将保存在程序目录下: screenshot_{timestamp}.png", info=True)
             
         elif cmd_type == 'normal' and '{' in cmd_content and '}' in cmd_content:
             # 处理包含占位符的普通命令
             placeholders = [p.split('}')[0] for p in cmd_content.split('{')[1:]]
             
             for placeholder in placeholders:
-                value, ok = QInputDialog.getText(self, f"输入{placeholder}", f"请输入{placeholder}:")
+                input_dialog = QInputDialog(self)
+                input_dialog.setWindowFlags(input_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+                input_dialog.setInputMode(QInputDialog.TextInput)
+                input_dialog.setWindowTitle(f"输入{placeholder}")
+                input_dialog.setLabelText(f"请输入{placeholder}:")
+                input_dialog.resize(400, 200)
+                ok = input_dialog.exec_()
+                value = input_dialog.textValue()
                 if not ok:
                     self.progress_bar.setVisible(False)
                     self.log_message("已取消命令执行", info=True)

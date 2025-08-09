@@ -17,6 +17,7 @@
         "name": "上传文件",
         "command": "hdc file send {local_path} {remote_path}",
         "category": "file",
+        "type": "upload",
         "icon": "upload",
         "tags": ["frequent"]
     },
@@ -24,6 +25,7 @@
         "name": "下载文件",
         "command": "hdc file recv {remote_path} {local_path}",
         "category": "file",
+        "type": "download",
         "icon": "download",
         "tags": ["frequent"]
     },
@@ -31,6 +33,7 @@
         "name": "安装应用",
         "command": "hdc install {local_path}",
         "category": "app",
+        "type": "upload",
         "icon": "install",
         "tags": ["frequent"]
     },
@@ -43,8 +46,9 @@
     },
     {
         "name": "截图",
-        "command": "$currentPath = (Get-Location).Path; & hdc shell snapshot_display -f /data/screenshot_{timestamp}.png; & hdc shell file recv /data/screenshot_{timestamp}.png \"$currentPath\\screenshot_{timestamp}.png\"",
+        "command": "hdc shell snapshot_display -f /data/screenshot_{timestamp}.png; hdc shell file recv /data/screenshot_{timestamp}.png \"screenshot_{timestamp}.png\"",
         "category": "system",
+        "type": "screenshot",
         "icon": "file",
         "tags": ["debug"]
     },

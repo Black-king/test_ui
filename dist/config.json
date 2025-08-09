@@ -37,7 +37,7 @@
     },
     {
         "name": "截图",
-        "command": "$currentPath = (Get-Location).Path; & hdc shell snapshot_display -f /data/screenshot_{timestamp}.png; & hdc shell file recv /data/screenshot_{timestamp}.png \"$currentPath\\screenshot_{timestamp}.png\"",
+        "command": "hdc shell snapshot_display -f /data/screenshot_{timestamp}.png; hdc shell file recv /data/screenshot_{timestamp}.png \"screenshot_{timestamp}.png\"",
         "type": "screenshot",
         "icon": "file"
     },
