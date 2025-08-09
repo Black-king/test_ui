@@ -2,49 +2,57 @@
     {
         "name": "设备列表",
         "command": "hdc list targets",
-        "type": "normal",
-        "icon": "device"
+        "category": "device",
+        "icon": "device",
+        "tags": ["frequent"]
     },
     {
         "name": "设备信息",
         "command": "hdc target mount",
-        "type": "normal",
-        "icon": "info"
+        "category": "device",
+        "icon": "info",
+        "tags": ["debug"]
     },
     {
         "name": "上传文件",
         "command": "hdc file send {local_path} {remote_path}",
-        "type": "upload",
-        "icon": "upload"
+        "category": "file",
+        "icon": "upload",
+        "tags": ["frequent"]
     },
     {
         "name": "下载文件",
         "command": "hdc file recv {remote_path} {local_path}",
-        "type": "download",
-        "icon": "download"
+        "category": "file",
+        "icon": "download",
+        "tags": ["frequent"]
     },
     {
         "name": "安装应用",
         "command": "hdc install {local_path}",
-        "type": "upload",
-        "icon": "install"
+        "category": "app",
+        "icon": "install",
+        "tags": ["frequent"]
     },
     {
         "name": "卸载应用",
         "command": "hdc uninstall {package_name}",
-        "type": "normal",
-        "icon": "uninstall"
+        "category": "app",
+        "icon": "uninstall",
+        "tags": ["dangerous"]
     },
     {
         "name": "截图",
         "command": "$currentPath = (Get-Location).Path; & hdc shell snapshot_display -f /data/screenshot_{timestamp}.png; & hdc shell file recv /data/screenshot_{timestamp}.png \"$currentPath\\screenshot_{timestamp}.png\"",
-        "type": "screenshot",
-        "icon": "file"
+        "category": "system",
+        "icon": "file",
+        "tags": ["debug"]
     },
     {
         "name": "查看任务栈",
         "command": "hdc shell aa dump -l",
-        "type": "normal",
-        "icon": "info"
+        "category": "device",
+        "icon": "info",
+        "tags": ["debug"]
     }
 ]

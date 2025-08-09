@@ -14,11 +14,11 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout
                              QLineEdit, QComboBox, QFormLayout, QMessageBox, QProgressBar,
                              QScrollArea, QFrame, QSplitter, QTabWidget, QToolButton, QMenu,
                              QAction, QListWidget, QListWidgetItem, QInputDialog, QGraphicsOpacityEffect,
-                             QDesktopWidget, QShortcut)
+                             QDesktopWidget, QShortcut, QSizePolicy)
 from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QSize, QTimer, QProcess, QPropertyAnimation, 
                           QEasingCurve, QPoint, QRect, QEvent, QObject, QRectF)
 from PyQt5.QtGui import (QIcon, QFont, QTextCursor, QColor, QPalette, QLinearGradient, QBrush, 
-                         QPainter, QPixmap, QFontDatabase, QPen, QRadialGradient, QKeySequence)
+                         QPainter, QPixmap, QFontDatabase, QPen, QRadialGradient, QKeySequence, QPainterPath)
 import random
 import math
 
@@ -108,7 +108,9 @@ class ParticleEffect(QWidget):
             self.custom_colors = colors
         if background is not None:
             self.background_qcolor = background
+        # 彻底清理粒子并重新初始化
         self.particles.clear()
+        self.time = 0  # 重置时间计数器
         self.init_particles()
     
     def set_palette(self, colors: list = None, background: QColor = None):
@@ -128,6 +130,10 @@ class ParticleEffect(QWidget):
             self.init_wave_ripples()
         elif self.effect_type == 'geometric_dance':
             self.init_geometric_dance()
+        elif self.effect_type == 'cherry_blossom':
+            self.init_cherry_blossom()
+        elif self.effect_type == 'forest_fireflies':
+            self.init_forest_fireflies()
     
     def init_floating_orbs(self):
         """初始化漂浮光球效果"""
@@ -222,6 +228,10 @@ class ParticleEffect(QWidget):
             self.update_wave_ripples()
         elif self.effect_type == 'geometric_dance':
             self.update_geometric_dance()
+        elif self.effect_type == 'cherry_blossom':
+            self.update_cherry_blossom()
+        elif self.effect_type == 'forest_fireflies':
+            self.update_forest_fireflies()
         
         self.update()  # 触发重绘
     
@@ -282,6 +292,10 @@ class ParticleEffect(QWidget):
             self.draw_wave_ripples(painter)
         elif self.effect_type == 'geometric_dance':
             self.draw_geometric_dance(painter)
+        elif self.effect_type == 'cherry_blossom':
+            self.draw_cherry_blossom(painter)
+        elif self.effect_type == 'forest_fireflies':
+            self.draw_forest_fireflies(painter)
     
     def draw_floating_orbs(self, painter):
         """绘制漂浮光球"""
@@ -358,6 +372,204 @@ class ParticleEffect(QWidget):
             center_color = QColor(particle['color_r'], particle['color_g'], particle['color_b'], int(50 * opacity))
             painter.setPen(QPen(center_color, 1))
             painter.drawLine(int(particle['center_x']), int(particle['center_y']), int(x), int(y))
+    
+    def init_cherry_blossom(self):
+        """初始化樱花树摇曳动效"""
+        self.particles.clear()
+        width = self.width() or 800
+        height = self.height() or 600
+        
+        # 创建樱花粒子
+        for i in range(15):
+            particle = {
+                'x': random.uniform(0, width),
+                'y': random.uniform(0, height),
+                'size': random.uniform(3, 8),
+                'speed_x': random.uniform(-0.5, 0.5),
+                'speed_y': random.uniform(-1, -0.3),
+                'sway_angle': random.uniform(0, 2 * math.pi),
+                'sway_speed': random.uniform(0.02, 0.05),
+                'sway_amplitude': random.uniform(2, 6),
+                'opacity': random.uniform(0.6, 1.0),
+                'color_r': random.choice([232, 107, 139, 240]),  # 紫色系
+                'color_g': random.choice([180, 61, 93, 230]),    # 紫色系
+                'color_b': random.choice([203, 123, 155, 240]),  # 紫色系
+                'rotation': random.uniform(0, 360),
+                'rotation_speed': random.uniform(-2, 2)
+            }
+            self.particles.append(particle)
+    
+    def update_cherry_blossom(self):
+        """更新樱花树摇曳动效"""
+        width = self.width() or 800
+        height = self.height() or 600
+        
+        for particle in self.particles:
+            # 摇曳效果
+            particle['sway_angle'] += particle['sway_speed']
+            sway_offset = math.sin(particle['sway_angle']) * particle['sway_amplitude']
+            
+            # 更新位置（添加摇曳偏移）
+            particle['x'] += particle['speed_x'] + sway_offset * 0.1
+            particle['y'] += particle['speed_y']
+            
+            # 旋转效果
+            particle['rotation'] += particle['rotation_speed']
+            
+            # 边界处理：从底部重新开始
+            if particle['y'] < -10:
+                particle['y'] = height + 10
+                particle['x'] = random.uniform(0, width)
+            
+            # 透明度脉动
+            particle['opacity'] = 0.6 + 0.4 * (1 + math.sin(self.time * 2 + particle['sway_angle'])) / 2
+    
+    def draw_cherry_blossom(self, painter):
+        """绘制樱花树摇曳动效"""
+        for particle in self.particles:
+            x, y = particle['x'], particle['y']
+            size = particle['size']
+            opacity = particle['opacity']
+            rotation = particle['rotation']
+            
+            # 保存当前状态
+            painter.save()
+            painter.translate(x, y)
+            painter.rotate(rotation)
+            
+            # 绘制樱花花瓣（五瓣花）
+            petal_count = 5
+            for i in range(petal_count):
+                angle = i * (360 / petal_count)
+                painter.save()
+                painter.rotate(angle)
+                
+                # 花瓣路径
+                petal_path = QPainterPath()
+                petal_path.moveTo(0, 0)
+                petal_path.quadTo(size * 0.3, -size * 0.5, size * 0.6, -size * 0.3)
+                petal_path.quadTo(size * 0.8, -size * 0.1, size * 0.6, size * 0.1)
+                petal_path.quadTo(size * 0.4, size * 0.3, 0, size * 0.2)
+                petal_path.quadTo(-size * 0.4, size * 0.3, -size * 0.6, size * 0.1)
+                petal_path.quadTo(-size * 0.8, -size * 0.1, -size * 0.6, -size * 0.3)
+                petal_path.quadTo(-size * 0.3, -size * 0.5, 0, 0)
+                
+                # 紫色渐变
+                gradient = QRadialGradient(0, 0, size)
+                gradient.setColorAt(0, QColor(255, 255, 255, int(200 * opacity)))
+                gradient.setColorAt(0.5, QColor(particle['color_r'], particle['color_g'], particle['color_b'], int(150 * opacity)))
+                gradient.setColorAt(1, QColor(particle['color_r'], particle['color_g'], particle['color_b'], int(50 * opacity)))
+                
+                painter.setBrush(QBrush(gradient))
+                painter.setPen(Qt.NoPen)
+                painter.drawPath(petal_path)
+                painter.restore()
+            
+            # 花蕊
+            center_gradient = QRadialGradient(0, 0, size * 0.3)
+            center_gradient.setColorAt(0, QColor(255, 255, 255, int(200 * opacity)))
+            center_gradient.setColorAt(1, QColor(232, 180, 203, int(100 * opacity)))
+            painter.setBrush(QBrush(center_gradient))
+            painter.drawEllipse(int(-size * 0.3), int(-size * 0.3), int(size * 0.6), int(size * 0.6))
+            
+            # 恢复状态
+            painter.restore()
+    
+    def init_forest_fireflies(self):
+        """初始化森林萤火虫动效"""
+        self.particles.clear()
+        width = self.width() or 800
+        height = self.height() or 600
+        
+        # 创建萤火虫粒子
+        for i in range(12):
+            particle = {
+                'x': random.uniform(0, width),
+                'y': random.uniform(0, height),
+                'size': random.uniform(2, 5),
+                'speed_x': random.uniform(-0.8, 0.8),
+                'speed_y': random.uniform(-1.2, 0.5),
+                'flicker_phase': random.uniform(0, 2 * math.pi),
+                'flicker_speed': random.uniform(0.2, 0.5),
+                'flicker_intensity': random.uniform(0.3, 0.8),
+                'opacity': random.uniform(0.4, 0.9),
+                'color_r': random.choice([0, 255, 255, 255]),  # 绿色系
+                'color_g': random.choice([255, 200, 255, 150]),  # 绿色系
+                'color_b': random.choice([0, 100, 0, 50]),      # 绿色系
+                'trail_length': random.randint(3, 8),
+                'trail_points': []
+            }
+            self.particles.append(particle)
+    
+    def update_forest_fireflies(self):
+        """更新森林萤火虫动效"""
+        width = self.width() or 800
+        height = self.height() or 600
+        
+        for particle in self.particles:
+            # 闪烁效果
+            particle['flicker_phase'] += particle['flicker_speed']
+            flicker = math.sin(particle['flicker_phase']) * particle['flicker_intensity']
+            
+            # 更新位置
+            particle['x'] += particle['speed_x']
+            particle['y'] += particle['speed_y']
+            
+            # 添加轨迹点
+            particle['trail_points'].append((particle['x'], particle['y']))
+            if len(particle['trail_points']) > particle['trail_length']:
+                particle['trail_points'].pop(0)
+            
+            # 边界处理：从另一边重新开始
+            if particle['x'] < -10:
+                particle['x'] = width + 10
+            elif particle['x'] > width + 10:
+                particle['x'] = -10
+            if particle['y'] < -10:
+                particle['y'] = height + 10
+            elif particle['y'] > height + 10:
+                particle['y'] = -10
+            
+            # 透明度随闪烁变化
+            particle['opacity'] = 0.4 + 0.5 * (1 + flicker) / 2
+    
+    def draw_forest_fireflies(self, painter):
+        """绘制森林萤火虫动效"""
+        for particle in self.particles:
+            x, y = particle['x'], particle['y']
+            size = particle['size']
+            opacity = particle['opacity']
+            
+            # 绘制轨迹
+            if len(particle['trail_points']) > 1:
+                trail_path = QPainterPath()
+                trail_path.moveTo(particle['trail_points'][0][0], particle['trail_points'][0][1])
+                
+                for i in range(1, len(particle['trail_points'])):
+                    trail_path.lineTo(particle['trail_points'][i][0], particle['trail_points'][i][1])
+                
+                # 轨迹渐变
+                trail_pen = QPen(QColor(particle['color_r'], particle['color_g'], particle['color_b'], int(30 * opacity)), 1)
+                trail_pen.setCapStyle(Qt.RoundCap)
+                painter.setPen(trail_pen)
+                painter.drawPath(trail_path)
+            
+            # 绘制萤火虫主体
+            # 外层光晕
+            halo_gradient = QRadialGradient(x, y, size * 4)
+            halo_gradient.setColorAt(0, QColor(particle['color_r'], particle['color_g'], particle['color_b'], int(80 * opacity)))
+            halo_gradient.setColorAt(1, QColor(particle['color_r'], particle['color_g'], particle['color_b'], 0))
+            painter.setBrush(QBrush(halo_gradient))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(int(x - size * 4), int(y - size * 4), int(size * 8), int(size * 8))
+            
+            # 核心光点
+            core_gradient = QRadialGradient(x, y, size)
+            core_gradient.setColorAt(0, QColor(255, 255, 255, int(200 * opacity)))
+            core_gradient.setColorAt(0.5, QColor(particle['color_r'], particle['color_g'], particle['color_b'], int(150 * opacity)))
+            core_gradient.setColorAt(1, QColor(particle['color_r'], particle['color_g'], particle['color_b'], int(50 * opacity)))
+            painter.setBrush(QBrush(core_gradient))
+            painter.drawEllipse(int(x - size), int(y - size), int(size * 2), int(size * 2))
     
     def resizeEvent(self, event):
         """窗口大小改变时重新初始化粒子"""
@@ -507,18 +719,18 @@ class CommandManager(QMainWindow):
                 'accent_color': '#88C0D0'
             },
             'amoled': {
-                'name': '🖤 AMOLED',
-                'window_bg': '#000000',
-                'title_bg': 'qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #121212, stop:1 #000000)',
+                'name': '💜 LAVENDER',
+                'window_bg': '#1a1a1a',
+                'title_bg': 'qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2d1b3d, stop:0.5 #4a2c5a, stop:1 #6b3d7b)',
                 'title_color': '#FFFFFF',
-                'button_bg': 'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0A0A0A, stop:1 #000000)',
-                'button_border': '#12C2E9',
-                'button_hover': 'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #12C2E9, stop:1 #0ABCF1)',
+                'button_bg': 'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #4a2c5a, stop:1 #6b3d7b)',
+                'button_border': '#e8b4cb',
+                'button_hover': 'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #6b3d7b, stop:1 #8b5d9b)',
                 'button_text': '#FFFFFF',
-                'terminal_bg': '#000000',
-                'terminal_border': '#12C2E9',
-                'terminal_text': '#E0E0E0',
-                'accent_color': '#12C2E9'
+                'terminal_bg': '#2d1b3d',
+                'terminal_border': '#e8b4cb',
+                'terminal_text': '#f0e6f0',
+                'accent_color': '#e8b4cb'
             }
         }
         
@@ -665,6 +877,23 @@ class CommandManager(QMainWindow):
             theme_menu.addAction(action)
         self.theme_button.setMenu(theme_menu)
         title_layout.addWidget(self.theme_button)
+        
+        # 中部诗句轮播标签
+        self.poem_label = QLabel()
+        self.poem_label.setObjectName("poemLabel")
+        self.poem_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.poem_label.setAlignment(Qt.AlignCenter)
+        self.poem_label.setFixedHeight(self.header_control_height)
+        # 默认样式：透明背景，居中显示
+        self.poem_label.setStyleSheet("""
+            font-size: 18px;
+            font-weight: 600;
+            padding: 8px 16px;
+            background: transparent;
+            border: none;
+        """)
+        title_layout.addWidget(self.poem_label)
+        
         title_layout.addStretch()  # 添加弹性空间推动时间标签到右侧
         
         # 当前时间显示
@@ -689,6 +918,20 @@ class CommandManager(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_time)
         self.timer.start(1000)  # 每秒更新一次
+        
+        # 诗句轮播：每5分钟更换一次
+        self.poems = [
+            "西风寒露深林下，任是无人也自香",
+            "疏影横斜水清浅，暗香浮动月黄昏",
+            "人闲桂花落，夜静春山空",
+            "竹外桃花三两枝，春江水暖鸭先知",
+            "明月松间照，清泉石上流"
+        ]
+        self._poem_index = 0
+        self.update_poem()
+        self.poem_timer = QTimer(self)
+        self.poem_timer.timeout.connect(self.update_poem)
+        self.poem_timer.start(5 * 60 * 1000)  # 5分钟
         
         title_layout.addWidget(self.time_label)
         main_layout.addWidget(title_widget)
@@ -731,9 +974,17 @@ class CommandManager(QMainWindow):
         
         # 添加粒子动画效果到左侧面板
         self.left_particle_effect = ParticleEffect(left_panel)
-        self.left_particle_effect.effect_type = 'floating_orbs'  # 设置为漂浮光球效果
         self.left_particle_effect.setGeometry(0, 0, left_panel.width(), left_panel.height())
         self.left_particle_effect.lower()  # 确保在其他控件下方
+        # 根据当前主题设置动效类型
+        if self.current_theme == 'dark':
+            self.left_particle_effect.set_effect('forest_fireflies')
+        elif self.current_theme == 'amoled':
+            self.left_particle_effect.set_effect('cherry_blossom')
+        elif self.current_theme == 'nord':
+            self.left_particle_effect.set_effect('wave_ripples')
+        else:
+            self.left_particle_effect.set_effect('floating_orbs')
         self.left_particle_effect.show()
         
         # 命令区域标题
@@ -864,7 +1115,7 @@ class CommandManager(QMainWindow):
         manage_btn.setCursor(Qt.PointingHandCursor)
         left_layout.addWidget(manage_btn)
         hint = QLabel("右键命令可 快速运行/编辑/删除/复制")
-        hint.setStyleSheet("color: #888; font-size: 11px;")
+        hint.setStyleSheet("color: #cccccc; font-size: 12px; font-weight: 500;")
         left_layout.addWidget(hint)
         
         # 右侧面板 - 终端输出区域
@@ -885,9 +1136,17 @@ class CommandManager(QMainWindow):
         
         # 添加粒子动画效果到右侧面板
         self.right_particle_effect = ParticleEffect(right_panel)
-        self.right_particle_effect.effect_type = 'wave_ripples'  # 设置为波纹效果
         self.right_particle_effect.setGeometry(0, 0, right_panel.width(), right_panel.height())
         self.right_particle_effect.lower()  # 确保在其他控件下方
+        # 根据当前主题设置动效类型
+        if self.current_theme == 'dark':
+            self.right_particle_effect.set_effect('forest_fireflies')
+        elif self.current_theme == 'amoled':
+            self.right_particle_effect.set_effect('cherry_blossom')
+        elif self.current_theme == 'nord':
+            self.right_particle_effect.set_effect('wave_ripples')
+        else:
+            self.right_particle_effect.set_effect('floating_orbs')
         self.right_particle_effect.show()
         
         # 终端区域标题
@@ -1134,6 +1393,19 @@ class CommandManager(QMainWindow):
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.time_label.setText(current_time)
     
+    def update_poem(self):
+        """轮播诗句显示到标题栏中部标签，用半角括号包围。"""
+        try:
+            if not hasattr(self, 'poems') or not self.poems:
+                return
+            self._poem_index = (getattr(self, '_poem_index', 0)) % len(self.poems)
+            poem_text = self.poems[self._poem_index]
+            # 用半角括号包围诗句
+            self.poem_label.setText(f"[ {poem_text} ]")
+            self._poem_index = (self._poem_index + 1) % len(self.poems)
+        except Exception:
+            pass
+    
     def load_config(self):
         # 加载配置文件
         try:
@@ -1291,10 +1563,39 @@ class CommandManager(QMainWindow):
             min-height: {self.header_control_height}px;
             max-height: {self.header_control_height}px;
         """)
+        
+        # 更新诗句标签样式（透明背景，高对比度文字）
+        if hasattr(self, 'poem_label'):
+            # 根据主题选择合适的文字颜色，确保清晰可见
+            if self.current_theme == 'light':
+                poem_color = '#000000'  # 浅色主题用黑色
+            elif self.current_theme == 'cyber':
+                poem_color = '#ffffff'  # 赛博主题用白色
+            elif self.current_theme == 'dark':
+                poem_color = '#ffffff'  # 深色主题用白色
+            elif self.current_theme == 'nord':
+                poem_color = '#ECEFF4'  # Nord主题用浅色
+            elif self.current_theme == 'amoled':
+                poem_color = '#e8b4cb'  # AMOLED主题用淡紫色
+            else:
+                poem_color = theme['title_color']
+            
+            self.poem_label.setStyleSheet(f"""
+                font-size: 18px;
+                font-weight: 600;
+                color: {poem_color};
+                background: transparent;
+                padding: 10px 16px;
+                border: none;
+                min-height: {self.header_control_height}px;
+                max-height: {self.header_control_height}px;
+            """)
         # 保持标题栏两侧控件等高
         if hasattr(self, 'header_control_height'):
             self.theme_button.setFixedHeight(self.header_control_height)
             self.time_label.setFixedHeight(self.header_control_height)
+            if hasattr(self, 'poem_label'):
+                self.poem_label.setFixedHeight(self.header_control_height)
         
         # 更新命令按钮样式
         self.update_command_buttons()
@@ -1474,6 +1775,25 @@ class CommandManager(QMainWindow):
                     }}
                 """)
 
+        # 更新提示文字样式
+        hint_labels = self.findChildren(QLabel)
+        for label in hint_labels:
+            if "右键命令可" in label.text():
+                # 根据主题设置合适的颜色
+                if self.current_theme == 'light':
+                    hint_color = '#666666'
+                    hint_bg = 'rgba(0,0,0,0.1)'
+                else:
+                    hint_color = '#cccccc'
+                    hint_bg = 'rgba(255,255,255,0.1)'
+                
+                label.setStyleSheet(f"""
+                    color: {hint_color};
+                    font-size: 12px;
+                    font-weight: 500;
+                    font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+                """)
+
         # 搜索框样式
         if hasattr(self, 'search_input'):
             self.search_input.setStyleSheet(f"""
@@ -1587,38 +1907,57 @@ class CommandManager(QMainWindow):
                     background=QColor(46, 52, 64, 160)  # 半透明NORD深蓝
                 )
             elif theme_key == 'amoled':
-                # 纯黑底的霓虹漂浮光球
-                amoled_colors = [
-                    (18, 194, 233),  # 主色
-                    (0, 255, 153),   # 霓虹绿
-                    (255, 0, 153),   # 紫红
-                    (255, 255, 255), # 白
+                # 优雅紫色樱花摇曳动效
+                purple_colors = [
+                    (232, 180, 203),  # 淡紫色
+                    (107, 61, 123),   # 深紫色
+                    (139, 93, 155),   # 中紫色
+                    (240, 230, 240),  # 浅紫白
                 ]
                 effect_widget.set_effect(
-                    effect_type='floating_orbs',
-                    colors=amoled_colors,
-                    background=QColor(0, 0, 0, 180)  # 半透明纯黑
+                    effect_type='cherry_blossom',
+                    colors=purple_colors,
+                    background=QColor(45, 27, 61, 120)  # 半透明深紫
+                )
+            elif theme_key == 'dark':
+                # 森林萤火虫动效
+                forest_colors = [
+                    (0, 255, 0),      # 亮绿色
+                    (255, 200, 0),    # 金黄色
+                    (255, 255, 0),    # 黄色
+                    (0, 200, 0),      # 深绿色
+                ]
+                effect_widget.set_effect(
+                    effect_type='forest_fireflies',
+                    colors=forest_colors,
+                    background=QColor(13, 17, 22, 120)  # 半透明森林深色
                 )
             else:
                 # 其他主题使用默认配置
-                effect_widget.set_effect(effect_widget.effect_type)
+                effect_widget.set_effect('floating_orbs')  # 强制使用默认动效
         
         if hasattr(self, 'left_particle_effect'):
             if show_particles:
-                self.left_particle_effect.show()
+                # 先停止当前动效
+                self.left_particle_effect.timer.stop()
+                # 应用新主题动效
                 apply_theme_effect(self.left_particle_effect, self.current_theme)
-                if not self.left_particle_effect.timer.isActive():
-                    self.left_particle_effect.timer.start(50)
+                # 显示并启动
+                self.left_particle_effect.show()
+                self.left_particle_effect.timer.start(50)
             else:
                 self.left_particle_effect.hide()
                 self.left_particle_effect.timer.stop()
         
         if hasattr(self, 'right_particle_effect'):
             if show_particles:
-                self.right_particle_effect.show()
+                # 先停止当前动效
+                self.right_particle_effect.timer.stop()
+                # 应用新主题动效
                 apply_theme_effect(self.right_particle_effect, self.current_theme)
-                if not self.right_particle_effect.timer.isActive():
-                    self.right_particle_effect.timer.start(50)
+                # 显示并启动
+                self.right_particle_effect.show()
+                self.right_particle_effect.timer.start(50)
             else:
                 self.right_particle_effect.hide()
                 self.right_particle_effect.timer.stop()
@@ -2113,19 +2452,19 @@ class CommandManager(QMainWindow):
         # 根据消息类型设置颜色和图标
         if error:
             color = "#e74c3c"
-            icon = "❌"
+            icon = "🔴"
             style = "font-weight:bold;"
         elif success:
             color = "#2ecc71"
-            icon = "✅"
+            icon = "🟢"
             style = "font-weight:bold;"
         elif info:
             color = theme['accent_color']
-            icon = "ℹ️"
+            icon = "🔵"
             style = ""
         else:
             color = theme['terminal_text']
-            icon = "➤"
+            icon = "⚡"
             style = ""
         
         # 时间戳颜色根据主题调整
