@@ -2117,7 +2117,9 @@ class CommandManager(QMainWindow):
             
             # 为按钮添加符号图标
             icon_symbol = self.get_command_icon_symbol(cmd.get('icon', 'terminal'))
-            btn.setText(f"{icon_symbol} {cmd['name']}")
+            # 处理文本长度，如果太长则截断并添加省略号
+            display_name = self.truncate_text(cmd['name'], max_length=8)
+            btn.setText(f"{icon_symbol} {display_name}")
             
             # 添加工具提示
             tooltip = self.create_command_tooltip(cmd)
@@ -2131,9 +2133,9 @@ class CommandManager(QMainWindow):
                     color: {theme['button_text']};
                     border: 3px solid {theme['button_border']};
                     border-radius: 12px;
-                    padding: 15px 18px;
+                    padding: 8px 6px;
                     font-weight: 700;
-                    font-size: 18px;
+                    font-size: 14px;
                     font-family: 'Arial', 'Microsoft YaHei', sans-serif;
                     text-align: center;
                     min-height: 65px;
@@ -2196,6 +2198,12 @@ class CommandManager(QMainWindow):
                 fade_in.setEndValue(1.0)
                 fade_in.setEasingCurve(QEasingCurve.InOutQuad)
                 QTimer.singleShot(i * 80, fade_in.start)
+    
+    def truncate_text(self, text, max_length=8):
+        """截断文本，如果超过最大长度则添加省略号"""
+        if len(text) <= max_length:
+            return text
+        return text[:max_length-3] + "..."
     
     def create_icon(self, icon_name):
         """创建图标，优先使用SVG，失败时使用备用方案"""
