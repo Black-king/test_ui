@@ -1,0 +1,375 @@
+[
+    {
+        "category": "HCD命令",
+        "templates": [
+            {
+                "name": "系统信息查看",
+                "command": "hdc shell getprop",
+                "type": "normal",
+                "icon": "info",
+                "description": "查看设备系统属性信息"
+            },
+            {
+                "name": "内存使用情况",
+                "command": "hdc shell free -h",
+                "type": "normal",
+                "icon": "info",
+                "description": "查看设备内存使用情况"
+            },
+            {
+                "name": "CPU信息",
+                "command": "hdc shell cat /proc/cpuinfo",
+                "type": "normal",
+                "icon": "info",
+                "description": "查看设备CPU详细信息"
+            },
+            {
+                "name": "磁盘使用情况",
+                "command": "hdc shell df -h",
+                "type": "normal",
+                "icon": "info",
+                "description": "查看设备存储空间使用情况"
+            },
+            {
+                "name": "创建目录",
+                "command": "hdc shell mkdir -p {remote_path}",
+                "type": "normal",
+                "icon": "file",
+                "description": "在设备上创建目录"
+            },
+            {
+                "name": "删除文件",
+                "command": "hdc shell rm {remote_path}",
+                "type": "normal",
+                "icon": "trash",
+                "description": "删除设备上的文件"
+            },
+            {
+                "name": "删除目录",
+                "command": "hdc shell rm -rf {remote_path}",
+                "type": "normal",
+                "icon": "trash",
+                "description": "删除设备上的目录及其内容"
+            },
+            {
+                "name": "网络连接测试",
+                "command": "hdc shell ping -c 4 {host}",
+                "type": "normal",
+                "icon": "terminal",
+                "description": "测试设备与指定主机的网络连接"
+            },
+            {
+                "name": "网络接口信息",
+                "command": "hdc shell ifconfig",
+                "type": "normal",
+                "icon": "info",
+                "description": "查看设备网络接口信息"
+            },
+            {
+                "name": "DNS查询",
+                "command": "hdc shell nslookup {domain}",
+                "type": "normal",
+                "icon": "terminal",
+                "description": "查询指定域名的DNS信息"
+            },
+            {
+                "name": "路由表",
+                "command": "hdc shell ip route",
+                "type": "normal",
+                "icon": "info",
+                "description": "查看设备路由表信息"
+            },
+            {
+                "name": "应用列表",
+                "command": "hdc shell pm list packages",
+                "type": "normal",
+                "icon": "info",
+                "description": "列出设备上安装的所有应用包名"
+            },
+            {
+                "name": "启动应用",
+                "command": "hdc shell aa start -a {package_name}",
+                "type": "normal",
+                "icon": "terminal",
+                "description": "启动指定的应用"
+            },
+            {
+                "name": "停止应用",
+                "command": "hdc shell aa force-stop {package_name}",
+                "type": "normal",
+                "icon": "terminal",
+                "description": "强制停止指定的应用"
+            },
+            {
+                "name": "清除应用数据",
+                "command": "hdc shell pm clear {package_name}",
+                "type": "normal",
+                "icon": "trash",
+                "description": "清除指定应用的数据和缓存"
+            },
+            {
+                "name": "CPU使用率",
+                "command": "hdc shell top -n 1 | grep -E '^CPU'",
+                "type": "normal",
+                "icon": "info",
+                "description": "查看设备CPU使用率"
+            },
+            {
+                "name": "进程列表",
+                "command": "hdc shell ps",
+                "type": "normal",
+                "icon": "info",
+                "description": "查看设备运行的进程列表"
+            },
+            {
+                "name": "内存TOP10",
+                "command": "hdc shell top -o %MEM -n 1 | head -n 11",
+                "type": "normal",
+                "icon": "info",
+                "description": "查看内存占用最高的10个进程"
+            },
+            {
+                "name": "CPU TOP10",
+                "command": "hdc shell top -o %CPU -n 1 | head -n 11",
+                "type": "normal",
+                "icon": "info",
+                "description": "查看CPU占用最高的10个进程"
+            }
+        ]
+    },
+    {
+        "category": "系统信息",
+        "templates": [
+            {
+                "name": "系统版本信息",
+                "command": "ver",
+                "type": "normal",
+                "icon": "info",
+                "description": "显示Windows系统版本信息"
+            },
+            {
+                "name": "系统配置信息",
+                "command": "systeminfo",
+                "type": "normal",
+                "icon": "info",
+                "description": "显示完整的系统配置信息"
+            },
+            {
+                "name": "IP配置信息",
+                "command": "ipconfig /all",
+                "type": "normal",
+                "icon": "info",
+                "description": "显示所有网络接口的详细配置信息"
+            },
+            {
+                "name": "任务列表",
+                "command": "tasklist",
+                "type": "normal",
+                "icon": "info",
+                "description": "显示当前运行的所有进程"
+            }
+        ]
+    },
+    {
+        "category": "文件操作",
+        "templates": [
+            {
+                "name": "文件夹快速打开",
+                "command": "explorer {local_path}",
+                "type": "normal",
+                "icon": "file",
+                "description": "在文件资源管理器中打开指定文件夹"
+            },
+            {
+                "name": "复制文件",
+                "command": "copy {local_path} {destination_path}",
+                "type": "normal",
+                "icon": "file",
+                "description": "复制文件到指定位置"
+            },
+            {
+                "name": "移动文件",
+                "command": "move {local_path} {destination_path}",
+                "type": "normal",
+                "icon": "file",
+                "description": "移动文件到指定位置"
+            },
+            {
+                "name": "删除文件",
+                "command": "del {local_path}",
+                "type": "normal",
+                "icon": "trash",
+                "description": "删除指定文件"
+            },
+            {
+                "name": "创建目录",
+                "command": "mkdir {local_path}",
+                "type": "normal",
+                "icon": "file",
+                "description": "创建新目录"
+            },
+            {
+                "name": "查看文件内容",
+                "command": "type {local_path}",
+                "type": "normal",
+                "icon": "file",
+                "description": "显示文件内容"
+            }
+        ]
+    },
+    {
+        "category": "网络工具",
+        "templates": [
+            {
+                "name": "Ping测试",
+                "command": "ping {host}",
+                "type": "normal",
+                "icon": "terminal",
+                "description": "测试与指定主机的网络连接"
+            },
+            {
+                "name": "查看网络连接",
+                "command": "netstat -an",
+                "type": "normal",
+                "icon": "info",
+                "description": "显示所有活动的网络连接"
+            },
+            {
+                "name": "路由表",
+                "command": "route print",
+                "type": "normal",
+                "icon": "info",
+                "description": "显示路由表信息"
+            },
+            {
+                "name": "DNS查询",
+                "command": "nslookup {domain}",
+                "type": "normal",
+                "icon": "terminal",
+                "description": "查询指定域名的DNS信息"
+            },
+            {
+                "name": "Traceroute",
+                "command": "tracert {host}",
+                "type": "normal",
+                "icon": "terminal",
+                "description": "跟踪数据包到达目标主机的路径"
+            },
+            {
+                "name": "网络统计",
+                "command": "netstat -e",
+                "type": "normal",
+                "icon": "info",
+                "description": "显示网络接口统计信息"
+            }
+        ]
+    },
+    {
+        "category": "应用管理",
+        "templates": [
+            {
+                "name": "启动应用",
+                "command": "start {application_path}",
+                "type": "normal",
+                "icon": "terminal",
+                "description": "启动指定的应用程序"
+            },
+            {
+                "name": "结束进程",
+                "command": "taskkill /IM {process_name} /F",
+                "type": "normal",
+                "icon": "terminal",
+                "description": "强制结束指定的进程"
+            },
+            {
+                "name": "结束进程(PID)",
+                "command": "taskkill /PID {process_id} /F",
+                "type": "normal",
+                "icon": "terminal",
+                "description": "强制结束指定PID的进程"
+            },
+            {
+                "name": "查找进程",
+                "command": "tasklist | findstr {process_name}",
+                "type": "normal",
+                "icon": "info",
+                "description": "查找指定名称的进程"
+            },
+            {
+                "name": "查看服务",
+                "command": "sc query",
+                "type": "normal",
+                "icon": "info",
+                "description": "列出所有服务"
+            },
+            {
+                "name": "启动服务",
+                "command": "sc start {service_name}",
+                "type": "normal",
+                "icon": "terminal",
+                "description": "启动指定的服务"
+            },
+            {
+                "name": "停止服务",
+                "command": "sc stop {service_name}",
+                "type": "normal",
+                "icon": "terminal",
+                "description": "停止指定的服务"
+            }
+        ]
+    },
+    {
+        "category": "性能监控",
+        "templates": [
+            {
+                "name": "CPU使用率",
+                "command": "wmic cpu get loadpercentage",
+                "type": "normal",
+                "icon": "cpu",
+                "description": "查看CPU使用率"
+            },
+            {
+                "name": "内存使用情况",
+                "command": "wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /Value",
+                "type": "normal",
+                "icon": "memory",
+                "description": "查看内存使用情况"
+            },
+            {
+                "name": "磁盘使用情况",
+                "command": "wmic logicaldisk get caption,description,freespace,size",
+                "type": "normal",
+                "icon": "info",
+                "description": "查看磁盘使用情况"
+            },
+            {
+                "name": "进程资源占用",
+                "command": "wmic process where name=\"{process_name}\" get processid,name,workingsetsize,usermodetime",
+                "type": "normal",
+                "icon": "info",
+                "description": "查看指定进程的资源占用"
+            },
+            {
+                "name": "系统运行时间",
+                "command": "net statistics server | find \"统计开始\" || net statistics server | find \"Statistics since\"",
+                "type": "normal",
+                "icon": "info",
+                "description": "查看系统运行时间"
+            },
+            {
+                "name": "性能监视器",
+                "command": "perfmon",
+                "type": "normal",
+                "icon": "cpu",
+                "description": "打开Windows性能监视器"
+            },
+            {
+                "name": "资源监视器",
+                "command": "resmon",
+                "type": "normal",
+                "icon": "cpu",
+                "description": "打开Windows资源监视器"
+            }
+        ]
+    }
+]

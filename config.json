@@ -4,22 +4,25 @@
         "command": "hdc list targets",
         "category": "device",
         "icon": "device",
-        "tags": ["frequent"]
+        "tags": [
+            "frequent"
+        ]
     },
     {
         "name": "设备信息",
         "command": "hdc target mount",
-        "category": "device",
-        "icon": "info",
-        "tags": ["debug"]
+        "type": "normal",
+        "icon": "info"
     },
     {
         "name": "上传文件",
         "command": "hdc file send {local_path} {remote_path}",
         "category": "file",
         "type": "upload",
-        "icon": "upload",
-        "tags": ["frequent"]
+        "icon": "上传文件",
+        "tags": [
+            "frequent"
+        ]
     },
     {
         "name": "下载文件",
@@ -27,7 +30,9 @@
         "category": "file",
         "type": "download",
         "icon": "download",
-        "tags": ["frequent"]
+        "tags": [
+            "frequent"
+        ]
     },
     {
         "name": "安装应用",
@@ -35,28 +40,38 @@
         "category": "app",
         "type": "upload",
         "icon": "install",
-        "tags": ["frequent"]
+        "tags": [
+            "frequent"
+        ]
     },
     {
         "name": "卸载应用",
         "command": "hdc uninstall {package_name}",
         "category": "app",
         "icon": "uninstall",
-        "tags": ["dangerous"]
+        "tags": [
+            "dangerous"
+        ]
     },
     {
         "name": "截图",
         "command": "hdc shell snapshot_display -f /data/screenshot_{timestamp}.png; hdc shell file recv /data/screenshot_{timestamp}.png \"screenshot_{timestamp}.png\"",
-        "category": "system",
         "type": "screenshot",
-        "icon": "file",
-        "tags": ["debug"]
+        "icon": "file"
     },
     {
         "name": "查看任务栈",
         "command": "hdc shell aa dump -l",
         "category": "device",
-        "icon": "info",
-        "tags": ["debug"]
+        "icon": "chart",
+        "tags": [
+            "debug"
+        ]
+    },
+    {
+        "name": "系统信息查看",
+        "command": "hdc shell getprop",
+        "type": "normal",
+        "icon": "system"
     }
 ]

@@ -1460,9 +1460,99 @@ class CommandManager(QMainWindow):
         if hasattr(self, 'search_input'):
             self.filter_commands(self.search_input.text())
     
-    def get_command_icon_symbol(self, command_name):
-        """根据命令名称返回对应的Unicode符号图标"""
+    def create_command_tooltip(self, cmd):
+        """创建命令的工具提示"""
+        tooltip = f"<b>{cmd['name']}</b>"
+        
+        # 添加命令内容
+        tooltip += f"<br><br>命令: {cmd['command']}"
+        
+        # 添加命令类型
+        if 'type' in cmd:
+            tooltip += f"<br>类型: {cmd['type']}"
+        
+        # 添加命令描述（如果有）
+        if 'description' in cmd:
+            tooltip += f"<br><br>{cmd['description']}"
+        
+        return tooltip
+        
+    def get_command_icon_symbol(self, icon_name):
+        """根据图标名称返回对应的Unicode符号图标"""
         icon_map = {
+            # 基本图标
+            'terminal': '💡',
+            'file': '📁',
+            'download': '📥',
+            'upload': '📤',
+            'screenshot': '📷',
+            'list': '📋',
+            'info': '🔍',  # 更改为放大镜图标
+            'network': '🌐',
+            'disk': '💾',
+            'memory': '🧠',
+            'cpu': '⚙️',
+            'system': '💡',
+            'process': '📊',
+            'service': '🔧',
+            'user': '👤',
+            'group': '👥',
+            'time': '⏰',
+            'date': '📅',
+            'log': '📝',
+            'help': '❓',
+            'search': '🔍',
+            'config': '⚙️',
+            'install': '📦',
+            'update': '🔄',
+            'remove': '🗑️',
+            'start': '▶️',
+            'stop': '⏹️',
+            'restart': '🔄',
+            'status': '📊',
+            'mount': '📂',
+            'unmount': '📤',
+            'backup': '💾',
+            'restore': '🔄',
+            'compress': '📦',
+            'extract': '📂',
+            'encrypt': '🔒',
+            'decrypt': '🔓',
+            'send': '📤',
+            'receive': '📥',
+            'connect': '🔌',
+            'disconnect': '🔌',
+            
+            # 新增图标
+            'star': '⭐',
+            'warning': '⚠️',
+            'error': '❌',
+            'success': '✅',
+            'cloud': '☁️',
+            'database': '🗄️',
+            'code': '📝',
+            'bug': '🐞',
+            'chart': '💡',
+            'folder': '📁',
+            'document': '📄',
+            'image': '🖼️',
+            'video': '🎬',
+            'audio': '🔊',
+            'link': '🔗',
+            'key': '🔑',
+            'gear': '⚙️',
+            'clock': '🕒',
+            'calendar': '📅',
+            'mail': '📧',
+            'phone': '📱',
+            'location': '📍',
+            'heart': '❤️',
+            'flag': '🚩',
+            'rocket': '🚀',
+            'fire': '🔥',
+            'light': '💡',
+            
+            # 兼容旧版命令名称
             '设备列表': '🔗',
             '设备信息': '💡',
             '上传文件': '🚀',
@@ -1470,15 +1560,9 @@ class CommandManager(QMainWindow):
             '安装应用': '⚙️',
             '卸载应用': '❌',
             '截图': '📷',
-            '查看任务': '🔍',
-            '11': '🎯',
-            '22': '🎲',
-            '33': '🎪',
-            '4': '🎨',
-            '5': '🎵',
-            '6': '🎮'
+            '查看任务': '🔍'
         }
-        return icon_map.get(command_name, '⭐')
+        return icon_map.get(icon_name, '⭐')
     
     def switch_theme(self):
         """切换主题"""
@@ -2032,8 +2116,12 @@ class CommandManager(QMainWindow):
             # 稳定优先：不使用不透明度效果，直接显示
             
             # 为按钮添加符号图标
-            icon_symbol = self.get_command_icon_symbol(cmd['name'])
+            icon_symbol = self.get_command_icon_symbol(cmd.get('icon', 'terminal'))
             btn.setText(f"{icon_symbol} {cmd['name']}")
+            
+            # 添加工具提示
+            tooltip = self.create_command_tooltip(cmd)
+            btn.setToolTip(tooltip)
             
             # 设置样式
             theme = self.themes[self.current_theme]
@@ -2512,6 +2600,10 @@ class CommandManager(QMainWindow):
     def show_command_manager(self):
         # 显示命令管理对话框
         dialog = CommandManagerDialog(self.commands, self)
+        # 设置默认显示模板库选项卡
+        tabs = dialog.findChild(QTabWidget)
+        if tabs:
+            tabs.setCurrentIndex(2)  # 索引2对应模板库选项卡
         dialog.exec_()
         # 关闭返回后刷新（防止子对话框变更未刷）
         self.update_command_buttons()
@@ -2601,13 +2693,26 @@ class CommandManagerDialog(QDialog):
         
         # 命令类型
         self.type_combo = QComboBox()
-        self.type_combo.addItems(["normal", "upload", "download", "screenshot"])
+        self.type_combo.addItems([
+            "normal", "upload", "download", "screenshot", "terminal", "device", "file", "app",
+            "system", "network", "memory", "cpu", "process", "service", "user", "group",
+            "log", "config", "install", "uninstall", "update", "backup", "restore",
+            "compress", "extract", "encrypt", "decrypt", "database", "web", "api"
+        ])
         add_layout.addRow("命令类型:", self.type_combo)
         
-        # 图标选择
-        self.icon_combo = QComboBox()
-        self.icon_combo.addItems(["terminal", "upload", "download", "device", "info", "install", "uninstall", "settings", "file"])
-        add_layout.addRow("图标:", self.icon_combo)
+        # 添加类型变化监听，显示当前选择的图标
+        self.icon_preview = QLabel()
+        self.icon_preview.setStyleSheet("font-size: 24px;")
+        
+        # 初始显示默认图标
+        self.update_icon_preview(self.type_combo.currentText())
+        
+        # 连接类型选择变化信号
+        self.type_combo.currentTextChanged.connect(self.update_icon_preview)
+        
+        # 添加图标预览
+        add_layout.addRow("图标预览:", self.icon_preview)
         
         # 提示信息
         help_text = QLabel("提示: 使用 {placeholder} 语法添加占位符，例如 {local_path} 或 {remote_path}")
@@ -2619,9 +2724,50 @@ class CommandManagerDialog(QDialog):
         add_command_btn.clicked.connect(self.add_command_from_form)
         add_layout.addRow(add_command_btn)
         
+        # 模板库选项卡
+        templates_tab = QWidget()
+        templates_layout = QVBoxLayout(templates_tab)
+        
+        # 模板分类和列表的水平布局
+        templates_split = QHBoxLayout()
+        
+        # 左侧分类列表
+        self.category_list = QListWidget()
+        self.category_list.setFixedWidth(150)
+        templates_split.addWidget(self.category_list)
+        
+        # 右侧模板列表
+        templates_right = QVBoxLayout()
+        self.templates_list = QListWidget()
+        templates_right.addWidget(self.templates_list)
+        
+        # 模板详情
+        self.template_detail = QTextEdit()
+        self.template_detail.setReadOnly(True)
+        self.template_detail.setFixedHeight(80)
+        templates_right.addWidget(self.template_detail)
+        
+        # 添加到模板按钮
+        add_template_btn = QPushButton("添加到我的命令")
+        add_template_btn.clicked.connect(self.add_template_to_commands)
+        templates_right.addWidget(add_template_btn)
+        
+        templates_split.addLayout(templates_right)
+        templates_layout.addLayout(templates_split)
+        
+        # 加载模板数据
+        self.load_templates()
+        
+        # 连接分类选择事件
+        self.category_list.currentRowChanged.connect(self.on_category_selected)
+        
+        # 连接模板选择事件
+        self.templates_list.currentRowChanged.connect(self.on_template_selected)
+        
         # 添加选项卡
         tabs.addTab(commands_tab, "命令列表")
         tabs.addTab(add_tab, "添加命令")
+        tabs.addTab(templates_tab, "模板库")
         
         # 对话框按钮
         buttons = QHBoxLayout()
@@ -2638,6 +2784,16 @@ class CommandManagerDialog(QDialog):
         # 快捷键：保存 / 关闭
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_changes)
         QShortcut(QKeySequence("Esc"), self, activated=self.reject)
+    
+    def update_icon_preview(self, cmd_type):
+        """根据命令类型更新图标预览"""
+        if self.parent_window:
+            # 使用父窗口的图标映射方法获取图标
+            icon_symbol = self.parent_window.get_command_icon_symbol(cmd_type)
+            self.icon_preview.setText(icon_symbol)
+        else:
+            # 如果没有父窗口，使用默认图标
+            self.icon_preview.setText("⭐")
     
     def apply_theme(self):
         """根据父窗口主题应用样式"""
@@ -2937,11 +3093,22 @@ class CommandManagerDialog(QDialog):
         svg_path = os.path.join(icon_dir, 'cyber_settings.svg')
         if os.path.exists(svg_path):
             self.setWindowIcon(QIcon(svg_path))
+            print(f"已加载图标: {svg_path}")
         else:
             # 备用方案：使用原始设置图标
             fallback_path = os.path.join(icon_dir, 'gear.svg')
             if os.path.exists(fallback_path):
                 self.setWindowIcon(QIcon(fallback_path))
+                print(f"已加载备用图标: {fallback_path}")
+            else:
+                print(f"无法加载图标，路径不存在: {svg_path} 或 {fallback_path}")
+                # 尝试使用终端图标作为最后的备用方案
+                terminal_icon = os.path.join(icon_dir, 'cyber_terminal.ico')
+                if os.path.exists(terminal_icon):
+                    self.setWindowIcon(QIcon(terminal_icon))
+                    print(f"已加载终端图标: {terminal_icon}")
+                else:
+                    print("所有图标路径均不存在")
     
     def update_command_list(self):
         # 更新命令列表
@@ -2963,7 +3130,9 @@ class CommandManagerDialog(QDialog):
         name = self.name_input.text().strip()
         command = self.command_input.text().strip()
         cmd_type = self.type_combo.currentText()
-        icon = self.icon_combo.currentText()
+        
+        # 根据命令类型自动设置图标
+        icon = cmd_type
         
         if not name or not command:
             QMessageBox.warning(self, "输入错误", "命令名称和内容不能为空")
@@ -3024,15 +3193,34 @@ class CommandManagerDialog(QDialog):
         
         # 命令类型
         type_combo = QComboBox()
-        type_combo.addItems(["normal", "upload", "download", "screenshot"])
+        type_combo.addItems([
+            "normal", "upload", "download", "screenshot", "terminal", "device", "file", "app",
+            "system", "network", "memory", "cpu", "process", "service", "user", "group",
+            "log", "config", "install", "uninstall", "update", "backup", "restore",
+            "compress", "extract", "encrypt", "decrypt", "database", "web", "api"
+        ])
         type_combo.setCurrentText(cmd.get('type', 'normal'))
         layout.addRow("命令类型:", type_combo)
         
-        # 图标选择
-        icon_combo = QComboBox()
-        icon_combo.addItems(["terminal", "upload", "download", "device", "info", "install", "uninstall", "settings", "file"])
-        icon_combo.setCurrentText(cmd.get('icon', 'terminal'))
-        layout.addRow("图标:", icon_combo)
+        # 添加图标预览
+        icon_preview = QLabel()
+        icon_preview.setStyleSheet("font-size: 24px;")
+        
+        # 初始显示当前图标
+        if self.parent_window:
+            icon_symbol = self.parent_window.get_command_icon_symbol(type_combo.currentText())
+            icon_preview.setText(icon_symbol)
+        
+        # 连接类型选择变化信号
+        def update_preview(cmd_type):
+            if self.parent_window:
+                icon_symbol = self.parent_window.get_command_icon_symbol(cmd_type)
+                icon_preview.setText(icon_symbol)
+        
+        type_combo.currentTextChanged.connect(update_preview)
+        
+        # 添加图标预览
+        layout.addRow("图标预览:", icon_preview)
         
         # 按钮
         buttons = QHBoxLayout()
@@ -3049,12 +3237,15 @@ class CommandManagerDialog(QDialog):
         
         # 显示对话框
         if dialog.exec_() == QDialog.Accepted:
+            # 获取命令类型并自动设置图标
+            cmd_type = type_combo.currentText()
+            
             # 更新命令
             self.commands[index] = {
                 "name": name_input.text().strip(),
                 "command": command_input.text().strip(),
-                "type": type_combo.currentText(),
-                "icon": icon_combo.currentText()
+                "type": cmd_type,
+                "icon": cmd_type  # 图标与命令类型保持一致
             }
             
             # 更新列表
@@ -3136,6 +3327,114 @@ class CommandManagerDialog(QDialog):
                 self.parent_window.commands = self.commands.copy()
                 self.parent_window.save_config()
                 self.parent_window.update_command_buttons()
+    
+    def load_templates(self):
+        """加载模板库数据"""
+        try:
+            # 获取模板文件路径
+            if getattr(sys, 'frozen', False):
+                # 如果是打包的应用，使用应用程序目录
+                templates_file = os.path.join(os.path.dirname(sys.executable), 'templates.json')
+            else:
+                # 如果是开发环境，使用脚本目录
+                templates_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates.json')
+            
+            # 检查文件是否存在
+            if not os.path.exists(templates_file):
+                self.category_list.addItem("未找到模板文件")
+                return
+            
+            # 加载模板数据
+            with open(templates_file, 'r', encoding='utf-8') as f:
+                self.templates_data = json.load(f)
+            
+            # 清空分类列表
+            self.category_list.clear()
+            
+            # 添加分类
+            for category in self.templates_data:
+                self.category_list.addItem(category['category'])
+            
+            # 默认选中第一个分类
+            if self.category_list.count() > 0:
+                self.category_list.setCurrentRow(0)
+        except Exception as e:
+            self.category_list.addItem(f"加载模板失败: {str(e)}")
+    
+    def on_category_selected(self, index):
+        """当分类被选中时更新模板列表"""
+        # 清空模板列表和详情
+        self.templates_list.clear()
+        self.template_detail.clear()
+        
+        # 检查索引是否有效
+        if index < 0 or not hasattr(self, 'templates_data') or index >= len(self.templates_data):
+            return
+        
+        # 获取选中分类的模板
+        templates = self.templates_data[index]['templates']
+        
+        # 添加模板到列表
+        for template in templates:
+            item = QListWidgetItem(template['name'])
+            item.setData(Qt.UserRole, template)
+            self.templates_list.addItem(item)
+        
+        # 默认选中第一个模板
+        if self.templates_list.count() > 0:
+            self.templates_list.setCurrentRow(0)
+    
+    def on_template_selected(self, index):
+        """当模板被选中时更新详情"""
+        # 清空详情
+        self.template_detail.clear()
+        
+        # 检查索引是否有效
+        if index < 0 or self.templates_list.count() == 0:
+            return
+        
+        # 获取选中的模板
+        item = self.templates_list.item(index)
+        template = item.data(Qt.UserRole)
+        
+        # 显示模板详情
+        detail_html = f"""<b>命令:</b> {template['command']}<br>
+<b>类型:</b> {template['type']}<br>
+<b>描述:</b> {template['description']}"""
+        self.template_detail.setHtml(detail_html)
+    
+    def add_template_to_commands(self):
+        """将选中的模板添加到命令列表"""
+        # 检查是否有选中的模板
+        selected_items = self.templates_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "选择错误", "请先选择一个模板")
+            return
+        
+        # 获取选中的模板
+        item = selected_items[0]
+        template = item.data(Qt.UserRole)
+        
+        # 添加到命令列表，图标根据类型自动设置
+        cmd_type = template['type']
+        self.commands.append({
+            "name": template['name'],
+            "command": template['command'],
+            "type": cmd_type,
+            "icon": cmd_type  # 图标与命令类型保持一致
+        })
+        
+        # 更新命令列表
+        self.update_command_list()
+        
+        # 实时更新主窗口
+        if self.parent_window:
+            self.parent_window.commands = self.commands.copy()
+            self.parent_window.save_config()
+            self.parent_window.update_command_buttons()
+        
+        # 提示添加成功
+        QMessageBox.information(self, "添加成功", f"已将模板 '{template['name']}' 添加到命令列表")
     
     def save_changes(self):
         """保存更改并关闭对话框"""
