@@ -940,19 +940,35 @@ class CommandManager(QMainWindow):
         self.timer.timeout.connect(self.update_time)
         self.timer.start(1000)  # 每秒更新一次
         
-        # 诗句轮播：每5分钟更换一次
+        # 诗句轮播：每3分钟更换一次
         self.poems = [
             "西风寒露深林下，任是无人也自香",
             "疏影横斜水清浅，暗香浮动月黄昏",
-            "人闲桂花落，夜静春山空",
-            "竹外桃花三两枝，春江水暖鸭先知",
-            "明月松间照，清泉石上流"
+            "非淡泊无以明志，非宁静无以致远",
+            "天行健，君子以自强不息",
+            "知者不惑，仁者不忧，勇者不惧",
+            "路漫漫其修远兮，吾将上下而求索",
+            "纸上得来终觉浅，绝知此事要躬行",
+            "人生如逆旅，我亦是行人",
+            "山川异域，风月同天",
+            "愿你出走半生，归来仍是少年",
+            "生活不止眼前的苟且，还有诗和远方",
+            "世界那么大，我想去看看",
+            "你若盛开，蝴蝶自来",
+            "心有猛虎，细嗅蔷薇",
+            "愿有岁月可回首，且以深情共白头",
+            "既然选择了远方，便只顾风雨兼程",
+            "时光不老，我们不散",
+            "愿你被这个世界温柔以待",
+            "做自己的太阳，无需凭借谁的光",
+            "努力到无能为力，拼搏到感动自己",
+            "不负青春，不负梦想"
         ]
         self._poem_index = 0
         self.update_poem()
         self.poem_timer = QTimer(self)
         self.poem_timer.timeout.connect(self.update_poem)
-        self.poem_timer.start(5 * 60 * 1000)  # 5分钟
+        self.poem_timer.start(3 * 60 * 1000)  # 3分钟
         
         title_layout.addWidget(self.time_label)
         main_layout.addWidget(title_widget)
@@ -1327,9 +1343,12 @@ class CommandManager(QMainWindow):
             self.fade_in_animation.setEasingCurve(QEasingCurve.InOutQuad)
             self.fade_in_animation.start()
         
-        # 连接面板大小变化事件
-        left_panel.resizeEvent = self.on_left_panel_resize
-        right_panel.resizeEvent = self.on_right_panel_resize
+        # 连接分割器大小变化事件
+        splitter.splitterMoved.connect(self.on_splitter_moved)
+        
+        # 保存面板引用以便后续使用
+        self.left_panel = left_panel
+        self.right_panel = right_panel
         
         # 延迟初始化粒子效果
         QTimer.singleShot(500, self.init_particle_effects)
@@ -1349,15 +1368,29 @@ class CommandManager(QMainWindow):
             self.right_particle_effect.particles.clear()
             self.right_particle_effect.init_particles()
     
-    def on_left_panel_resize(self, event):
-        """左侧面板大小变化时更新粒子效果"""
-        if hasattr(self, 'left_particle_effect'):
-            self.left_particle_effect.setGeometry(0, 0, event.size().width(), event.size().height())
+    def on_splitter_moved(self, pos, index):
+        """分割器移动时更新粒子效果"""
+        self.update_particle_effects_size()
     
-    def on_right_panel_resize(self, event):
-        """右侧面板大小变化时更新粒子效果"""
-        if hasattr(self, 'right_particle_effect'):
-            self.right_particle_effect.setGeometry(0, 0, event.size().width(), event.size().height())
+    def resizeEvent(self, event):
+        """主窗口大小变化时更新粒子效果"""
+        super().resizeEvent(event)
+        # 延迟更新粒子效果，确保面板大小已经更新
+        QTimer.singleShot(50, self.update_particle_effects_size)
+    
+    def update_particle_effects_size(self):
+        """更新粒子效果大小"""
+        if hasattr(self, 'left_particle_effect') and hasattr(self, 'left_panel'):
+            self.left_particle_effect.setGeometry(0, 0, self.left_panel.width(), self.left_panel.height())
+            # 重新初始化粒子以适应新的尺寸
+            self.left_particle_effect.particles.clear()
+            self.left_particle_effect.init_particles()
+        
+        if hasattr(self, 'right_particle_effect') and hasattr(self, 'right_panel'):
+            self.right_particle_effect.setGeometry(0, 0, self.right_panel.width(), self.right_panel.height())
+            # 重新初始化粒子以适应新的尺寸
+            self.right_particle_effect.particles.clear()
+            self.right_particle_effect.init_particles()
     
     def set_window_icon(self):
         """设置窗口图标"""
