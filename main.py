@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout
                              QAction, QListWidget, QListWidgetItem, QInputDialog, QGraphicsOpacityEffect,
                              QDesktopWidget, QShortcut, QSizePolicy, QToolTip)
 from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QSize, QTimer, QProcess, QPropertyAnimation, 
-                          QEasingCurve, QPoint, QRect, QEvent, QObject, QRectF)
+                          QEasingCurve, QPoint, QRect, QEvent, QObject, QRectF, QT_VERSION_STR)
 from PyQt5.QtGui import (QIcon, QFont, QTextCursor, QColor, QPalette, QLinearGradient, QBrush, 
                          QPainter, QPixmap, QFontDatabase, QPen, QRadialGradient, QKeySequence, QPainterPath)
 import random
@@ -1890,18 +1890,12 @@ class CommandManager(QMainWindow):
     
     def create_command_tooltip(self, cmd):
         """创建命令的工具提示"""
-        tooltip = f"<b>{cmd['name']}</b>"
+        tooltip = f"<b></b>"
         
         # 添加命令内容
-        tooltip += f"<br><br>命令: {cmd['command']}"
+        tooltip += f"<b>命令:</b> {cmd['command']}</b>"
         
-        # 添加命令类型
-        if 'type' in cmd:
-            tooltip += f"<br>类型: {cmd['type']}"
-        
-        # 添加命令描述（如果有）
-        if 'description' in cmd:
-            tooltip += f"<br><br>{cmd['description']}"
+        # 不显示类型和分类信息
         
         return tooltip
         
@@ -2218,13 +2212,14 @@ class CommandManager(QMainWindow):
             color: {tooltip_text} !important;
             border: 2px solid {tooltip_border} !important;
             border-radius: 8px !important;
-            padding: 10px 14px !important;
+            padding: 12px 16px !important;
             font-size: 12px !important;
             font-family: 'Microsoft YaHei', 'Arial', sans-serif !important;
             font-weight: 500 !important;
-            min-width: 220px !important;
-            max-width: 450px !important;
-            line-height: 1.4 !important;
+            min-width: 250px !important;
+            max-width: 700px !important;
+            min-height: 60px !important;
+            line-height: 1.6 !important;
         }}
         """
         
@@ -2238,10 +2233,71 @@ class CommandManager(QMainWindow):
         QApplication.instance().setPalette(palette)
         
         # 输出调试信息
+        print(f"Qt version: {QT_VERSION_STR}")
         print(f"当前主题: {self.current_theme}")
         print(f"悬浮提示背景色: {tooltip_bg}")
         print(f"悬浮提示文字色: {tooltip_text}")
         print(f"悬浮提示边框色: {tooltip_border}")
+    
+    def apply_button_tooltip_style(self, button):
+        """为单个按钮应用悬浮提示样式"""
+        theme = self.themes[self.current_theme]
+        
+        # 使用与apply_tooltip_style相同的颜色逻辑
+        if self.current_theme == 'light':
+            # 浅色主题：使用柔和的白色背景配深灰文字，蓝色边框更友好
+            tooltip_bg = '#ffffff'
+            tooltip_text = '#333333'
+            tooltip_border = '#4a90e2'
+        elif self.current_theme == 'cyber':
+            # 赛博主题：深蓝背景配亮青文字，柔和边框
+            tooltip_bg = '#0f172a'
+            tooltip_text = '#22d3ee'
+            tooltip_border = '#06b6d4'
+        elif self.current_theme == 'dark':
+            # 森林主题：深绿背景配浅绿文字，友好边框
+            tooltip_bg = '#022c22'
+            tooltip_text = '#6ee7b7'
+            tooltip_border = '#10b981'
+        elif self.current_theme == 'nord':
+            # Nord主题：柔和深蓝背景配浅色文字，冰蓝边框
+            tooltip_bg = '#3B4252'
+            tooltip_text = '#E5E9F0'
+            tooltip_border = '#81A1C1'
+        elif self.current_theme == 'amoled':
+            # AMOLED主题：深黑背景配柔和粉文字，友好边框
+            tooltip_bg = '#000000'
+            tooltip_text = '#f9a8d4'
+            tooltip_border = '#f472b6'
+        else:
+            # 默认样式
+            tooltip_bg = theme.get('terminal_bg', '#2b2b2b')
+            tooltip_text = theme.get('terminal_text', '#ffffff')
+            tooltip_border = theme.get('accent_color', '#00ffff')
+        
+        # 获取按钮当前样式
+        current_style = button.styleSheet()
+        
+        # 构建工具提示样式
+        tooltip_style = f"""
+            QToolTip {{
+                background-color: {tooltip_bg} !important;
+                color: {tooltip_text} !important;
+                border: 2px solid {tooltip_border} !important;
+                border-radius: 8px !important;
+                padding: 8px 12px !important;
+                font-size: 13px !important;
+                font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif !important;
+                font-weight: 500 !important;
+                min-width: 120px !important;
+                max-width: 300px !important;
+                line-height: 1.4 !important;
+            }}
+        """
+        
+        # 合并样式
+        combined_style = current_style + tooltip_style
+        button.setStyleSheet(combined_style)
     
     def update_status_bar_style(self):
         """更新状态栏样式"""
@@ -2619,7 +2675,7 @@ class CommandManager(QMainWindow):
             # 为按钮添加符号图标
             icon_symbol = self.get_command_icon_symbol(cmd.get('icon', 'terminal'))
             # 处理文本长度，如果太长则截断并添加省略号
-            display_name = self.truncate_text(cmd['name'], max_length=8)
+            display_name = self.truncate_text(cmd['name'])
             btn.setText(f"{icon_symbol} {display_name}")
             
             # 添加工具提示
@@ -2631,9 +2687,9 @@ class CommandManager(QMainWindow):
             tooltip_bg = theme.get('terminal_bg', '#2b2b2b')
             tooltip_text = theme.get('terminal_text', '#ffffff')
             tooltip_border = theme.get('accent_color', '#00ffff')
-            # 设置合并样式，包括按钮和工具提示
+            # 设置按钮样式（不包括工具提示样式）
             theme = self.themes[self.current_theme]
-            combined_style = f"""
+            button_style = f"""
             QPushButton {{
                 background: {theme['button_bg']};
                 color: {theme['button_text']};
@@ -2661,16 +2717,11 @@ class CommandManager(QMainWindow):
                 outline: none;
                 border: 3px solid {theme['accent_color']};
             }}
-            QToolTip {{
-                background-color: {tooltip_bg};
-                color: {tooltip_text};
-                border: 2px solid {tooltip_border};
-                border-radius: 8px;
-                padding: 10px;
-                font-size: 12px;
-            }}
             """
-            btn.setStyleSheet(combined_style)
+            btn.setStyleSheet(button_style)
+            
+            # 单独应用工具提示样式
+            self.apply_button_tooltip_style(btn)
             
             # 设置鼠标悬停为手型
             btn.setCursor(Qt.PointingHandCursor)
@@ -2715,7 +2766,7 @@ class CommandManager(QMainWindow):
                 fade_in.setEasingCurve(QEasingCurve.InOutQuad)
                 QTimer.singleShot(i * 80, fade_in.start)
     
-    def truncate_text(self, text, max_length=8):
+    def truncate_text(self, text, max_length=15):
         """截断文本，如果超过最大长度则添加省略号"""
         if len(text) <= max_length:
             return text
@@ -3093,7 +3144,7 @@ class CommandManager(QMainWindow):
                         """)
                         # 更新按钮文本显示录屏状态
                         icon_symbol = "⏹️"  # 停止图标
-                        display_name = self.truncate_text(cmd['name'], max_length=8)
+                        display_name = self.truncate_text(cmd['name'])
                         widget.setText(f"{icon_symbol} {display_name}")
                     else:
                         # 正常状态：恢复原始样式
@@ -3116,7 +3167,7 @@ class CommandManager(QMainWindow):
                         """)
                         # 恢复原始按钮文本
                         icon_symbol = self.get_command_icon_symbol(cmd.get('icon', 'terminal'))
-                        display_name = self.truncate_text(cmd['name'], max_length=8)
+                        display_name = self.truncate_text(cmd['name'])
                         widget.setText(f"{icon_symbol} {display_name}")
                     break
 
@@ -3220,6 +3271,9 @@ class CommandManager(QMainWindow):
             widget = self.commands_grid.itemAt(i).widget()
             if widget:
                 widget.setEnabled(True)
+                
+                # 重新应用悬浮提示样式
+                self.apply_button_tooltip_style(widget)
                 
                 # 添加按钮启用动画
                 enable_anim = QPropertyAnimation(widget, b"geometry")

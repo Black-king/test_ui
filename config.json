@@ -56,7 +56,7 @@
         "icon": "screenshot"
     },
     {
-        "name": "设备录屏112",
+        "name": "设备录屏",
         "command": "{\"start\": \"hdc shell screenrecord /data/local/tmp/screen_{timestamp}.mp4\", \"stop\": \"hdc shell pkill -SIGINT screenrecord\", \"export\": \"hdc file recv /data/local/tmp/screen_{timestamp}.mp4 ./screen_{timestamp}.mp4\"}",
         "type": "screen_record",
         "icon": "screen_record"
