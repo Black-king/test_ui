@@ -2231,6 +2231,12 @@ class CommandManager(QMainWindow):
         # 直接设置样式，使用!important确保优先级
         QApplication.instance().setStyleSheet(tooltip_style)
         
+        # 同时设置调色板以确保工具提示颜色生效
+        palette = QApplication.instance().palette()
+        palette.setColor(QPalette.ToolTipBase, QColor(tooltip_bg))
+        palette.setColor(QPalette.ToolTipText, QColor(tooltip_text))
+        QApplication.instance().setPalette(palette)
+        
         # 输出调试信息
         print(f"当前主题: {self.current_theme}")
         print(f"悬浮提示背景色: {tooltip_bg}")
