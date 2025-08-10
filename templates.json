@@ -80,6 +80,13 @@
                 "description": "查看设备路由表信息"
             },
             {
+                "name": "设备录屏",
+                "command": "{\"start\": \"hdc shell screenrecord /data/local/tmp/screen_{timestamp}.mp4\", \"stop\": \"hdc shell pkill -SIGINT screenrecord\", \"export\": \"hdc file recv /data/local/tmp/screen_{timestamp}.mp4 ./screen_{timestamp}.mp4\"}",
+                "type": "screen_record",
+                "icon": "screen_record",
+                "description": "标准设备录屏，点击两次：第一次开始录屏，第二次停止并导出"
+            },
+            {
                 "name": "应用列表",
                 "command": "hdc shell pm list packages",
                 "type": "normal",

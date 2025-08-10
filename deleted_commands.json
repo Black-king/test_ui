@@ -1,1 +1,80 @@
-[]
+[
+    {
+        "name": "设备录屏",
+        "command": "hdc shell screenrecord /data/local/tmp/screen_{timestamp}.mp4",
+        "type": "screen_record",
+        "icon": "screen_record",
+        "deleted_at": "2025-08-10 22:58:54"
+    },
+    {
+        "name": "自定义录屏",
+        "command": "hdc shell screenrecord --bit-rate {bitrate} --time-limit {duration} /data/local/tmp/custom_screen_{timestamp}.mp4",
+        "type": "screen_record",
+        "icon": "screen_record",
+        "deleted_at": "2025-08-10 22:58:56"
+    },
+    {
+        "name": "设备录屏",
+        "command": "hdc shell screenrecord /data/local/tmp/screen_{timestamp}.mp4",
+        "type": "screen_record",
+        "icon": "screen_record",
+        "deleted_at": "2025-08-10 23:05:50"
+    },
+    {
+        "name": "自定义录屏",
+        "command": "hdc shell screenrecord --bit-rate {bitrate} --time-limit {duration} /data/local/tmp/custom_screen_{timestamp}.mp4",
+        "type": "screen_record",
+        "icon": "screen_record",
+        "deleted_at": "2025-08-10 23:05:52"
+    },
+    {
+        "name": "设备录屏",
+        "command": "hdc shell screenrecord /data/local/tmp/screen_{timestamp}.mp4",
+        "type": "screen_record",
+        "icon": "screen_record",
+        "deleted_at": "2025-08-10 23:08:23"
+    },
+    {
+        "name": "高质量录屏",
+        "command": "{\"start\": \"hdc shell screenrecord --bit-rate 8000000 /data/local/tmp/hq_screen_{timestamp}.mp4\", \"stop\": \"hdc shell pkill -SIGINT screenrecord\", \"export\": \"hdc file recv /data/local/tmp/hq_screen_{timestamp}.mp4 ./hq_screen_{timestamp}.mp4\"}",
+        "type": "screen_record",
+        "icon": "screen_record",
+        "deleted_at": "2025-08-10 23:22:17"
+    },
+    {
+        "name": "设备录屏",
+        "command": "{\"start\": \"hdc shell screenrecord /data/local/tmp/screen_{timestamp}.mp4\", \"stop\": \"hdc shell pkill -SIGINT screenrecord\", \"export\": \"hdc file recv /data/local/tmp/screen_{timestamp}.mp4 ./screen_{timestamp}.mp4\"}",
+        "type": "screen_record",
+        "icon": "screen_record",
+        "deleted_at": "2025-08-10 23:22:19"
+    },
+    {
+        "name": "自定义录屏",
+        "command": "{\"start\": \"hdc shell screenrecord --bit-rate {bitrate} --time-limit {duration} /data/local/tmp/custom_screen_{timestamp}.mp4\", \"stop\": \"hdc shell pkill -SIGINT screenrecord\", \"export\": \"hdc file recv /data/local/tmp/custom_screen_{timestamp}.mp4 ./custom_screen_{timestamp}.mp4\"}",
+        "type": "screen_record",
+        "icon": "screen_record",
+        "deleted_at": "2025-08-10 23:22:20"
+    },
+    {
+        "name": "设备录屏",
+        "command": "{\"start\": \"hdc shell screenrecord /data/local/tmp/screen_{timestamp}.mp4\", \"stop\": \"hdc shell pkill -SIGINT screenrecord\", \"export\": \"hdc file recv /data/local/tmp/screen_{timestamp}.mp4 ./screen_{timestamp}.mp4\"}",
+        "category": "device",
+        "type": "screen_record",
+        "icon": "screen_record",
+        "deleted_at": "2025-08-10 23:22:59"
+    },
+    {
+        "name": "设备录屏",
+        "command": "{\"start\": \"hdc shell screenrecord /data/local/tmp/screen_{timestamp}.mp4\", \"stop\": \"hdc shell pkill -SIGINT screenrecord\", \"export\": \"hdc file recv /data/local/tmp/screen_{timestamp}.mp4 ./screen_{timestamp}.mp4\"}",
+        "type": "screen_record",
+        "icon": "screen_record",
+        "deleted_at": "2025-08-10 23:26:30"
+    },
+    {
+        "name": "设备录屏",
+        "command": "{\"start\": \"hdc shell screenrecord /data/local/tmp/screen_{timestamp}.mp4\", \"stop\": \"hdc shell pkill -SIGINT screenrecord\", \"export\": \"hdc file recv /data/local/tmp/screen_{timestamp}.mp4 ./screen_{timestamp}.mp4\"}",
+        "type": "screen_record",
+        "icon": "screen_record",
+        "deleted_at": "2025-08-10 23:36:14"
+    }
+]

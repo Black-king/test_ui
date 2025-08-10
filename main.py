@@ -9,12 +9,18 @@ import subprocess
 import datetime
 import tempfile
 import shutil
+import logging
+import traceback
+import signal
+import threading
+import time
+import atexit
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout,
                              QWidget, QLabel, QTextEdit, QGridLayout, QFileDialog, QDialog,
                              QLineEdit, QComboBox, QFormLayout, QMessageBox, QProgressBar,
                              QScrollArea, QFrame, QSplitter, QTabWidget, QToolButton, QMenu,
                              QAction, QListWidget, QListWidgetItem, QInputDialog, QGraphicsOpacityEffect,
-                             QDesktopWidget, QShortcut, QSizePolicy)
+                             QDesktopWidget, QShortcut, QSizePolicy, QToolTip)
 from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QSize, QTimer, QProcess, QPropertyAnimation, 
                           QEasingCurve, QPoint, QRect, QEvent, QObject, QRectF)
 from PyQt5.QtGui import (QIcon, QFont, QTextCursor, QColor, QPalette, QLinearGradient, QBrush, 
@@ -40,6 +46,176 @@ DELETED_COMMANDS_FILE = os.path.join(APP_BASE_DIR, 'deleted_commands.json')
 
 # 全局动画开关（为稳定优先，默认关闭）
 ANIMATIONS_ENABLED = False
+
+# 日志配置
+LOG_DIR = os.path.join(APP_BASE_DIR, 'logs')
+LOG_FILE = os.path.join(LOG_DIR, 'crash_log.txt')
+HEARTBEAT_FILE = os.path.join(LOG_DIR, 'heartbeat.txt')
+CRASH_MARKER_FILE = os.path.join(LOG_DIR, 'crash_marker.txt')
+
+# 全局变量
+heartbeat_thread = None
+heartbeat_running = False
+
+def setup_crash_logging():
+    """设置崩溃日志系统"""
+    # 创建日志目录
+    if not os.path.exists(LOG_DIR):
+        os.makedirs(LOG_DIR)
+    
+    # 配置日志格式
+    log_format = '%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
+    
+    # 配置文件日志处理器
+    file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+    file_handler.setLevel(logging.INFO)  # 修改为INFO级别，记录所有日志
+    file_handler.setFormatter(logging.Formatter(log_format))
+    
+    # 配置控制台日志处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(log_format))
+    
+    # 配置根日志记录器
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=[file_handler, console_handler],
+        format=log_format
+    )
+    
+    # 设置全局异常处理器
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        
+        error_msg = f"未捕获的异常: {exc_type.__name__}: {exc_value}"
+        logging.error(error_msg, exc_info=(exc_type, exc_value, exc_traceback))
+        
+        # 记录系统信息
+        logging.error(f"Python版本: {sys.version}")
+        logging.error(f"操作系统: {os.name}")
+        logging.error(f"工作目录: {os.getcwd()}")
+        logging.error(f"应用基础目录: {APP_BASE_DIR}")
+        
+        print(f"\n=== 崩溃日志已保存到: {LOG_FILE} ===")
+        print(f"错误信息: {error_msg}")
+        print("请查看日志文件获取详细信息")
+    
+    sys.excepthook = handle_exception
+    
+    # 设置信号处理器（Windows下部分信号不可用）
+    def signal_handler(signum, frame):
+        signal_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
+        error_msg = f"接收到系统信号: {signal_name} ({signum})"
+        logging.critical(error_msg)
+        logging.critical(f"信号接收时间: {datetime.datetime.now()}")
+        logging.critical(f"Python版本: {sys.version}")
+        logging.critical(f"工作目录: {os.getcwd()}")
+        print(f"\n=== 系统信号崩溃 ===")
+        print(f"信号: {signal_name} ({signum})")
+        print(f"日志已保存到: {LOG_FILE}")
+        sys.exit(1)
+    
+    # 注册信号处理器（仅注册Windows支持的信号）
+    try:
+        signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+        signal.signal(signal.SIGTERM, signal_handler)  # 终止信号
+        if hasattr(signal, 'SIGBREAK'):
+            signal.signal(signal.SIGBREAK, signal_handler)  # Windows Ctrl+Break
+    except (OSError, ValueError) as e:
+        logging.warning(f"部分信号处理器注册失败: {e}")
+    
+    # 注册程序退出时的清理函数
+    def cleanup_on_exit():
+        global heartbeat_running
+        heartbeat_running = False
+        # 移除崩溃标记文件（正常退出）
+        try:
+            if os.path.exists(CRASH_MARKER_FILE):
+                os.remove(CRASH_MARKER_FILE)
+        except Exception as e:
+            logging.error(f"清理崩溃标记文件失败: {e}")
+    
+    atexit.register(cleanup_on_exit)
+    
+    logging.info("崩溃日志系统已启动")
+    logging.info(f"日志文件路径: {LOG_FILE}")
+    logging.info(f"心跳文件路径: {HEARTBEAT_FILE}")
+    logging.info(f"崩溃标记文件路径: {CRASH_MARKER_FILE}")
+
+def start_heartbeat():
+    """启动心跳检测线程"""
+    global heartbeat_thread, heartbeat_running
+    
+    def heartbeat_worker():
+        while heartbeat_running:
+            try:
+                with open(HEARTBEAT_FILE, 'w', encoding='utf-8') as f:
+                    f.write(f"{datetime.datetime.now().isoformat()}\n")
+                    f.write(f"PID: {os.getpid()}\n")
+                    f.write(f"Status: Running\n")
+                time.sleep(5)  # 每5秒更新一次心跳
+            except Exception as e:
+                logging.error(f"心跳更新失败: {e}")
+                time.sleep(5)
+    
+    heartbeat_running = True
+    heartbeat_thread = threading.Thread(target=heartbeat_worker, daemon=True)
+    heartbeat_thread.start()
+    logging.info("心跳检测已启动")
+
+def stop_heartbeat():
+    """停止心跳检测"""
+    global heartbeat_running
+    heartbeat_running = False
+    logging.info("心跳检测已停止")
+
+def check_previous_crash():
+    """检查上次是否异常退出"""
+    crash_detected = False
+    
+    # 检查崩溃标记文件
+    if os.path.exists(CRASH_MARKER_FILE):
+        try:
+            with open(CRASH_MARKER_FILE, 'r', encoding='utf-8') as f:
+                crash_info = f.read()
+            logging.warning("检测到上次程序异常退出")
+            logging.warning(f"崩溃信息: {crash_info}")
+            crash_detected = True
+        except Exception as e:
+            logging.error(f"读取崩溃标记文件失败: {e}")
+    
+    # 检查心跳文件
+    if os.path.exists(HEARTBEAT_FILE):
+        try:
+            with open(HEARTBEAT_FILE, 'r', encoding='utf-8') as f:
+                heartbeat_info = f.read()
+            # 如果心跳文件存在但没有崩溃标记，说明可能是异常退出
+            if not crash_detected:
+                logging.warning("检测到心跳文件残留，可能发生了异常退出")
+                logging.warning(f"上次心跳信息: {heartbeat_info}")
+                crash_detected = True
+        except Exception as e:
+            logging.error(f"读取心跳文件失败: {e}")
+    
+    if crash_detected:
+        logging.warning("=== 上次运行异常退出检测 ===")
+        logging.warning("建议检查系统日志或事件查看器获取更多信息")
+    
+    return crash_detected
+
+def create_crash_marker(reason="Unknown"):
+    """创建崩溃标记文件"""
+    try:
+        with open(CRASH_MARKER_FILE, 'w', encoding='utf-8') as f:
+            f.write(f"Crash Time: {datetime.datetime.now().isoformat()}\n")
+            f.write(f"Reason: {reason}\n")
+            f.write(f"PID: {os.getpid()}\n")
+            f.write(f"Python Version: {sys.version}\n")
+            f.write(f"Working Directory: {os.getcwd()}\n")
+    except Exception as e:
+        logging.error(f"创建崩溃标记文件失败: {e}")
 
 # 默认命令配置
 DEFAULT_COMMANDS = [
@@ -593,7 +769,7 @@ class CommandThread(QThread):
         
     def run(self):
         try:
-            # 不主动输出额外换行，由 UI 端在提示命令后决定是否换行
+            logging.info(f"CommandThread开始执行: {self.command}")
             
             # 创建进程
             self.process = QProcess()
@@ -608,19 +784,27 @@ class CommandThread(QThread):
             
             # 启动进程 - 使用cmd执行命令，先设置代码页为UTF-8
             full_command = f"chcp 65001 >nul 2>&1 && {self.command}"
+            logging.debug(f"执行完整命令: {full_command}")
             self.process.start("cmd", ["/c", full_command])
             
             # 等待进程完成
             if self.process.waitForFinished(-1):
                 exit_code = self.process.exitCode()
+                logging.info(f"命令执行完成，退出代码: {exit_code}")
                 if exit_code == 0:
                     self.finished_signal.emit(True, "命令执行成功")
                 else:
-                    self.finished_signal.emit(False, f"命令执行失败，退出代码: {exit_code}")
+                    error_msg = f"命令执行失败，退出代码: {exit_code}"
+                    logging.warning(error_msg)
+                    self.finished_signal.emit(False, error_msg)
             else:
-                self.finished_signal.emit(False, "命令执行超时或失败")
+                error_msg = "命令执行超时或失败"
+                logging.error(error_msg)
+                self.finished_signal.emit(False, error_msg)
                 
         except Exception as e:
+            error_msg = f"CommandThread执行异常: {e}"
+            logging.error(error_msg, exc_info=True)
             self.output_signal.emit(f"错误: {str(e)}\n")
             self.finished_signal.emit(False, f"执行出错: {str(e)}")
     
@@ -666,16 +850,36 @@ class CommandThread(QThread):
 class CommandManager(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.commands = []
-        self.deleted_commands = []  # 回收站命令列表
-        self.command_thread = None
-        self.current_theme = 'light'  # 默认主题
-        self.init_themes()
-        # 读取UI偏好（如主题）
-        self.load_ui_settings()
-        self.init_ui()
-        self.load_config()
-        self.load_deleted_commands()
+        try:
+            logging.info("开始初始化CommandManager...")
+            self.commands = []
+            self.deleted_commands = []  # 回收站命令列表
+            self.command_thread = None
+            self.current_theme = 'light'  # 默认主题
+            self.command_states = {}  # 命令状态记录字典，用于支持录屏等状态切换命令
+            self._edit_dialog_open = False  # 防止重复打开编辑对话框
+            
+            logging.info("初始化主题...")
+            self.init_themes()
+            
+            logging.info("加载UI设置...")
+            self.load_ui_settings()
+            
+            logging.info("初始化UI...")
+            self.init_ui()
+            
+            logging.info("加载配置...")
+            self.load_config()
+            
+            logging.info("加载删除的命令...")
+            self.load_deleted_commands()
+            
+            logging.info("CommandManager初始化完成")
+        except Exception as e:
+            error_msg = f"CommandManager初始化失败: {e}"
+            logging.error(error_msg, exc_info=True)
+            print(error_msg)
+            raise
         
     def init_themes(self):
         """初始化主题配置"""
@@ -898,6 +1102,8 @@ class CommandManager(QMainWindow):
             theme_menu.addAction(action)
         self.theme_button.setMenu(theme_menu)
         title_layout.addWidget(self.theme_button)
+        
+        # 移除日志按钮，将其移动到左侧面板
         
         # 中部诗句轮播标签
         self.poem_label = QLabel()
@@ -1152,6 +1358,10 @@ class CommandManager(QMainWindow):
         manage_btn.setCursor(Qt.PointingHandCursor)
         left_layout.addWidget(manage_btn)
         
+        # 回收站和日志按钮区域
+        recycle_log_layout = QHBoxLayout()
+        recycle_log_layout.setSpacing(10)
+        
         # 回收站按钮
         recycle_btn = QPushButton("🗑️ 查看回收站")
         recycle_btn.setStyleSheet(f"""
@@ -1165,12 +1375,14 @@ class CommandManager(QMainWindow):
                 font-weight: 600;
                 font-size: 12px;
                 margin: 5px 0px;
+                min-width: 120px;
             }}
             QPushButton:hover {{
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #4a5568, stop:1 #2d3748);
                 border-color: #ffed4e;
                 color: #ffed4e;
+                margin-top: 3px;
             }}
             QPushButton:pressed {{
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -1181,7 +1393,42 @@ class CommandManager(QMainWindow):
         """)
         recycle_btn.clicked.connect(self.show_recycle_bin)
         recycle_btn.setCursor(Qt.PointingHandCursor)
-        left_layout.addWidget(recycle_btn)
+        recycle_log_layout.addWidget(recycle_btn)
+        
+        # 日志查看按钮
+        self.log_button = QPushButton("📋 查看日志")
+        self.log_button.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #1e3a8a, stop:1 #1e40af);
+                color: #60a5fa;
+                border: 2px solid #60a5fa;
+                padding: 8px 16px;
+                border-radius: 8px;
+                font-weight: 600;
+                font-size: 12px;
+                margin: 5px 0px;
+                min-width: 100px;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #3b82f6, stop:1 #2563eb);
+                border-color: #93c5fd;
+                color: #ffffff;
+                margin-top: 3px;
+            }}
+            QPushButton:pressed {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #60a5fa, stop:1 #3b82f6);
+                border-color: #60a5fa;
+                color: #000000;
+            }}
+        """)
+        self.log_button.clicked.connect(self.show_log_viewer)
+        self.log_button.setCursor(Qt.PointingHandCursor)
+        recycle_log_layout.addWidget(self.log_button)
+        
+        left_layout.addLayout(recycle_log_layout)
         
         hint = QLabel("右键命令可 快速编辑/删除/复制")
         hint.setStyleSheet("color: #cccccc; font-size: 12px; font-weight: 500;")
@@ -1667,6 +1914,7 @@ class CommandManager(QMainWindow):
             'download': '📥',
             'upload': '📤',
             'screenshot': '📷',
+            'screen_record': '🎬',
             'list': '📋',
             'info': '🔍',  # 更改为放大镜图标
             'network': '🌐',
@@ -1893,6 +2141,9 @@ class CommandManager(QMainWindow):
                 action.setChecked(theme_key == self.current_theme)
                 action.triggered.connect(lambda checked, k=theme_key: self.set_theme(k))
                 self.theme_button.menu().addAction(action)
+        
+        # 设置全局悬浮提示样式
+        self.apply_tooltip_style(theme)
 
     def get_menu_stylesheet(self, theme):
         # 通用 QMenu/QAction 样式，保证在深色/浅色/高对比主题下可读
@@ -1922,6 +2173,69 @@ class CommandManager(QMainWindow):
                 margin: 4px 2px;
             }}
         """
+    
+    def apply_tooltip_style(self, theme):
+        """设置全局悬浮提示样式"""
+        # 为不同主题设计专门的悬浮提示样式，确保高对比度和可读性
+        if self.current_theme == 'light':
+            # 浅色主题：使用柔和的白色背景配深灰文字，蓝色边框更友好
+            tooltip_bg = '#ffffff'
+            tooltip_text = '#333333'
+            tooltip_border = '#4a90e2'
+        elif self.current_theme == 'cyber':
+            # 赛博主题：深蓝背景配亮青文字，柔和边框
+            tooltip_bg = '#0f172a'
+            tooltip_text = '#22d3ee'
+            tooltip_border = '#06b6d4'
+        elif self.current_theme == 'dark':
+            # 森林主题：深绿背景配浅绿文字，友好边框
+            tooltip_bg = '#022c22'
+            tooltip_text = '#6ee7b7'
+            tooltip_border = '#10b981'
+        elif self.current_theme == 'nord':
+            # Nord主题：柔和深蓝背景配浅色文字，冰蓝边框
+            tooltip_bg = '#3B4252'
+            tooltip_text = '#E5E9F0'
+            tooltip_border = '#81A1C1'
+        elif self.current_theme == 'amoled':
+            # AMOLED主题：深黑背景配柔和粉文字，友好边框
+            tooltip_bg = '#000000'
+            tooltip_text = '#f9a8d4'
+            tooltip_border = '#f472b6'
+        else:
+            # 默认样式
+            tooltip_bg = theme.get('terminal_bg', '#2b2b2b')
+            tooltip_text = theme.get('terminal_text', '#ffffff')
+            tooltip_border = theme.get('accent_color', '#00ffff')
+        
+        # 设置全局悬浮提示样式
+        QToolTip.setFont(QFont('Microsoft YaHei', 10))
+        
+        # 使用更简单直接的样式设置方法
+        tooltip_style = f"""
+        QToolTip {{
+            background-color: {tooltip_bg} !important;
+            color: {tooltip_text} !important;
+            border: 2px solid {tooltip_border} !important;
+            border-radius: 8px !important;
+            padding: 10px 14px !important;
+            font-size: 12px !important;
+            font-family: 'Microsoft YaHei', 'Arial', sans-serif !important;
+            font-weight: 500 !important;
+            min-width: 220px !important;
+            max-width: 450px !important;
+            line-height: 1.4 !important;
+        }}
+        """
+        
+        # 直接设置样式，使用!important确保优先级
+        QApplication.instance().setStyleSheet(tooltip_style)
+        
+        # 输出调试信息
+        print(f"当前主题: {self.current_theme}")
+        print(f"悬浮提示背景色: {tooltip_bg}")
+        print(f"悬浮提示文字色: {tooltip_text}")
+        print(f"悬浮提示边框色: {tooltip_border}")
     
     def update_status_bar_style(self):
         """更新状态栏样式"""
@@ -2306,40 +2620,57 @@ class CommandManager(QMainWindow):
             tooltip = self.create_command_tooltip(cmd)
             btn.setToolTip(tooltip)
             
-            # 设置样式
+            # 手动为按钮设置QToolTip样式，确保应用
             theme = self.themes[self.current_theme]
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {theme['button_bg']};
-                    color: {theme['button_text']};
-                    border: 3px solid {theme['button_border']};
-                    border-radius: 12px;
-                    padding: 8px 6px;
-                    font-weight: 700;
-                    font-size: 14px;
-                    font-family: 'Arial', 'Microsoft YaHei', sans-serif;
-                    text-align: center;
-                    min-height: 65px;
-                }}
-                QPushButton:hover {{
-                    background: {'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 ' + theme['button_hover'] + ', stop:1 rgba(0, 255, 255, 0.3))' if self.current_theme == 'cyber' else theme['button_hover']};
-                    color: {theme['button_text']};
-                    border: 3px solid {theme['accent_color']};
-                    border-style: solid;
-                }}
-                QPushButton:pressed {{
-                    background: {'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 ' + theme['button_hover'] + ', stop:1 rgba(255, 107, 107, 0.3))' if self.current_theme == 'cyber' else theme['button_hover']};
-                    color: {theme['button_text']};
-                    border: 2px solid {theme['accent_color']};
-                }}
-                QPushButton:focus {{
-                    outline: none;
-                    border: 3px solid {theme['accent_color']};
-                }}
-            """)
+            tooltip_bg = theme.get('terminal_bg', '#2b2b2b')
+            tooltip_text = theme.get('terminal_text', '#ffffff')
+            tooltip_border = theme.get('accent_color', '#00ffff')
+            # 设置合并样式，包括按钮和工具提示
+            theme = self.themes[self.current_theme]
+            combined_style = f"""
+            QPushButton {{
+                background: {theme['button_bg']};
+                color: {theme['button_text']};
+                border: 3px solid {theme['button_border']};
+                border-radius: 12px;
+                padding: 8px 6px;
+                font-weight: 700;
+                font-size: 14px;
+                font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+                text-align: center;
+                min-height: 65px;
+            }}
+            QPushButton:hover {{
+                background: {'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 ' + theme['button_hover'] + ', stop:1 rgba(0, 255, 255, 0.3))' if self.current_theme == 'cyber' else theme['button_hover']};
+                color: {theme['button_text']};
+                border: 3px solid {theme['accent_color']};
+                border-style: solid;
+            }}
+            QPushButton:pressed {{
+                background: {'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 ' + theme['button_hover'] + ', stop:1 rgba(255, 107, 107, 0.3))' if self.current_theme == 'cyber' else theme['button_hover']};
+                color: {theme['button_text']};
+                border: 2px solid {theme['accent_color']};
+            }}
+            QPushButton:focus {{
+                outline: none;
+                border: 3px solid {theme['accent_color']};
+            }}
+            QToolTip {{
+                background-color: {tooltip_bg};
+                color: {tooltip_text};
+                border: 2px solid {tooltip_border};
+                border-radius: 8px;
+                padding: 10px;
+                font-size: 12px;
+            }}
+            """
+            btn.setStyleSheet(combined_style)
             
             # 设置鼠标悬停为手型
             btn.setCursor(Qt.PointingHandCursor)
+            
+            # 为按钮添加命令数据属性，用于状态更新时识别
+            btn.setProperty('command_data', cmd)
             
             # 连接点击事件
             btn.clicked.connect(lambda checked, cmd=cmd: self.execute_command(cmd))
@@ -2495,18 +2826,300 @@ class CommandManager(QMainWindow):
             pass
     
     def execute_command(self, cmd):
-        # 获取命令类型和内容
-        cmd_type = cmd.get('type', 'normal')
-        cmd_content = cmd['command']
-        cmd_name = cmd.get('name', '未命名命令')
+        try:
+            # 获取命令类型和内容
+            cmd_type = cmd.get('type', 'normal')
+            cmd_content = cmd['command']
+            cmd_name = cmd.get('name', '未命名命令')
+            
+            logging.info(f"开始执行命令: {cmd_name} (类型: {cmd_type})")
+            logging.debug(f"命令内容: {cmd_content}")
+            
+            # 特殊处理录屏命令的状态切换
+            if cmd_type == 'screen_record' or '录屏' in cmd_name:
+                cmd_id = f"{cmd_name}_{cmd_content}"  # 使用命令名和内容作为唯一标识
+                
+                try:
+                    # 尝试解析JSON格式的录屏命令
+                    screen_commands = json.loads(cmd_content)
+                    start_cmd = screen_commands.get('start', '')
+                    stop_cmd = screen_commands.get('stop', '')
+                    export_cmd = screen_commands.get('export', '')
+                except (json.JSONDecodeError, TypeError):
+                    # 如果不是JSON格式，使用原有逻辑（兼容旧版本）
+                    start_cmd = cmd_content.replace('stop', 'start') if 'stop' in cmd_content else cmd_content
+                    stop_cmd = cmd_content.replace('start', 'stop') if 'start' in cmd_content else cmd_content + ' stop'
+                    export_cmd = ''
+                
+                if cmd_id not in self.command_states:
+                    # 第一次点击：开始录屏
+                    self.command_states[cmd_id] = 'recording'
+                    self.log_message(f"🔴 开始录屏: {cmd_name}", info=True)
+                    
+                    # 更新按钮显示状态
+                    self.update_recording_button_state(cmd, True)
+                    
+                    # 执行开始录屏命令
+                    if start_cmd:
+                        self.run_command_with_progress(start_cmd, f"开始录屏 {cmd_name}")
+                    return
+                else:
+                    # 第二次点击：结束录屏并导出
+                    del self.command_states[cmd_id]
+                    self.log_message(f"⏹️ 结束录屏并导出: {cmd_name}", info=True)
+                    
+                    # 更新按钮显示状态
+                    self.update_recording_button_state(cmd, False)
+                    
+                    # 执行结束录屏命令
+                    if stop_cmd:
+                        self.run_command_with_progress(stop_cmd, f"结束录屏 {cmd_name}")
+                    
+                    # 执行导出命令（如果有）
+                    if export_cmd:
+                        # 延迟执行导出命令，确保停止命令先完成
+                        QTimer.singleShot(2000, lambda: self.run_command_with_progress(export_cmd, f"导出录屏 {cmd_name}"))
+                    return
         
-        # 显示命令执行提示
-        self.log_message(f"准备执行: {cmd_name}", info=True)
+            # 显示命令执行提示
+            self.log_message(f"准备执行: {cmd_name}", info=True)
+            
+            # 创建命令执行动画效果
+            self.progress_bar.setValue(0)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setFormat(f"正在准备 {cmd_name} %p%")
+            
+            # 进度条动画
+            self.progress_animation = QPropertyAnimation(self.progress_bar, b"value")
+            self.progress_animation.setDuration(800)
+            self.progress_animation.setStartValue(0)
+            self.progress_animation.setEndValue(20)
+            self.progress_animation.setEasingCurve(QEasingCurve.OutCubic)
+            self.progress_animation.start()
+            
+            # 根据命令类型处理
+            if cmd_type == 'upload':
+                # 选择本地文件
+                local_path, _ = QFileDialog.getOpenFileName(self, "选择要上传的文件")
+                if not local_path:
+                    self.progress_bar.setVisible(False)
+                    self.log_message("已取消文件上传", info=True)
+                    return
+                
+                # 获取远程路径
+                input_dialog = QInputDialog(self)
+                input_dialog.setWindowFlags(input_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+                input_dialog.setInputMode(QInputDialog.TextInput)
+                input_dialog.setWindowTitle("远程路径")
+                input_dialog.setLabelText("请输入远程设备上的路径:")
+                input_dialog.resize(400, 200)
+                ok = input_dialog.exec_()
+                remote_path = input_dialog.textValue()
+                if not ok or not remote_path:
+                    self.progress_bar.setVisible(False)
+                    self.log_message("已取消文件上传", info=True)
+                    return
+                
+                # 替换命令中的占位符
+                cmd_content = cmd_content.replace('{local_path}', f'"{local_path}"')
+                cmd_content = cmd_content.replace('{remote_path}', f'"{remote_path}"')
+                self.log_message(f"已选择文件: {local_path}", info=True)
+                
+            elif cmd_type == 'download':
+                # 获取远程文件路径
+                input_dialog = QInputDialog(self)
+                input_dialog.setWindowFlags(input_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+                input_dialog.setInputMode(QInputDialog.TextInput)
+                input_dialog.setWindowTitle("远程文件")
+                input_dialog.setLabelText("请输入要下载的远程文件路径:")
+                input_dialog.resize(400, 200)
+                ok = input_dialog.exec_()
+                remote_path = input_dialog.textValue()
+                if not ok or not remote_path:
+                    self.progress_bar.setVisible(False)
+                    self.log_message("已取消文件下载", info=True)
+                    return
+                
+                # 选择本地保存路径
+                local_path, _ = QFileDialog.getSaveFileName(self, "保存文件到")
+                if not local_path:
+                    # 如果用户没有选择保存路径，使用当前目录
+                    local_path = os.path.join(os.getcwd(), os.path.basename(remote_path))
+                
+                # 替换命令中的占位符
+                cmd_content = cmd_content.replace('{remote_path}', f'"{remote_path}"')
+                cmd_content = cmd_content.replace('{local_path}', f'"{local_path}"')
+                self.log_message(f"将保存到: {local_path}", info=True)
+                
+            elif cmd_type == 'screenshot':
+                # 自动处理截图命令，不需要用户输入
+                import datetime
+                timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                
+                # 替换命令中的时间戳占位符
+                cmd_content = cmd_content.replace('{timestamp}', timestamp)
+                self.log_message(f"截图将保存在程序目录下: screenshot_{timestamp}.png", info=True)
+                
+            elif cmd_type == 'normal' and '{' in cmd_content and '}' in cmd_content:
+                # 处理包含占位符的普通命令
+                placeholders = [p.split('}')[0] for p in cmd_content.split('{')[1:]]
+                
+                for placeholder in placeholders:
+                    input_dialog = QInputDialog(self)
+                    input_dialog.setWindowFlags(input_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+                    input_dialog.setInputMode(QInputDialog.TextInput)
+                    input_dialog.setWindowTitle(f"输入{placeholder}")
+                    input_dialog.setLabelText(f"请输入{placeholder}:")
+                    input_dialog.resize(400, 200)
+                    ok = input_dialog.exec_()
+                    value = input_dialog.textValue()
+                    if not ok:
+                        self.progress_bar.setVisible(False)
+                        self.log_message("已取消命令执行", info=True)
+                        return
+                    
+                    cmd_content = cmd_content.replace(f'{{{placeholder}}}', f'"{value}"')
+            
+            # 更新进度条状态
+            self.progress_animation.stop()
+            self.progress_animation.setStartValue(20)
+            self.progress_animation.setEndValue(40)
+            self.progress_animation.setDuration(500)
+            self.progress_animation.start()
+            
+            # 执行命令
+            QTimer.singleShot(300, lambda: self.run_command(cmd_content))
         
+        except Exception as e:
+            error_msg = f"执行命令失败: {cmd_name} - {e}"
+            logging.error(error_msg, exc_info=True)
+            self.log_message(error_msg, error=True)
+            if hasattr(self, 'progress_bar'):
+                self.progress_bar.setVisible(False)
+    
+    def run_command(self, command):
+        try:
+            logging.info(f"准备运行命令: {command}")
+            
+            # 如果有正在运行的命令，先停止它
+            if self.command_thread and self.command_thread.isRunning():
+                logging.info("停止之前运行的命令")
+                self.command_thread.stop()
+                self.command_thread.wait()
+            
+            # 创建并启动新的命令线程，传递当前主题
+            current_theme = self.themes[self.current_theme]
+            self.command_thread = CommandThread(command, current_theme)
+            self.command_thread.output_signal.connect(self.update_terminal)
+            self.command_thread.progress_signal.connect(self.update_progress)
+            self.command_thread.finished_signal.connect(self.command_finished)
+            
+            # 显示进度条并更新状态
+            self.progress_bar.setValue(40)
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setFormat("正在执行命令 %p%")
+            
+            # 添加命令执行提示到终端，使用主题颜色，并在其后加一空行，便于与输出分隔
+            self.terminal.moveCursor(QTextCursor.End)
+            prompt_color = current_theme['accent_color']
+            self.terminal.append(f"<span style='color:{prompt_color}; font-weight:bold; font-size:18px;'>$ {command}</span>")
+            self.terminal.append("")
+            self.terminal.moveCursor(QTextCursor.End)
+            
+            # 更新进度条动画
+            self.progress_animation = QPropertyAnimation(self.progress_bar, b"value")
+            self.progress_animation.setStartValue(40)
+            self.progress_animation.setEndValue(70)
+            self.progress_animation.setDuration(1000)
+            self.progress_animation.setEasingCurve(QEasingCurve.InOutQuad)
+            self.progress_animation.start()
+            
+            # 禁用所有命令按钮，直到命令执行完成
+            for i in range(self.commands_grid.count()):
+                widget = self.commands_grid.itemAt(i).widget()
+                if widget:
+                    widget.setEnabled(False)
+                    
+            # 启动线程
+            self.command_thread.start()
+            logging.info("命令线程已启动")
+        
+        except Exception as e:
+            error_msg = f"运行命令失败: {command} - {e}"
+            logging.error(error_msg, exc_info=True)
+            self.log_message(error_msg, error=True)
+            if hasattr(self, 'progress_bar'):
+                self.progress_bar.setVisible(False)
+            # 重新启用按钮
+            for i in range(self.commands_grid.count()):
+                widget = self.commands_grid.itemAt(i).widget()
+                if widget:
+                    widget.setEnabled(True)
+
+    def update_recording_button_state(self, cmd, is_recording):
+        """更新录屏按钮的显示状态"""
+        # 查找对应的按钮并更新其显示
+        for i in range(self.commands_grid.count()):
+            widget = self.commands_grid.itemAt(i).widget()
+            if widget and hasattr(widget, 'property'):
+                # 检查按钮是否对应当前命令
+                button_cmd = widget.property('command_data')
+                if button_cmd and button_cmd.get('name') == cmd.get('name'):
+                    theme = self.themes[self.current_theme]
+                    if is_recording:
+                        # 录屏中状态：红色边框，显示停止图标
+                        widget.setStyleSheet(f"""
+                            QPushButton {{
+                                background: {theme['button_bg']};
+                                color: #ff4444;
+                                border: 3px solid #ff4444;
+                                border-radius: 12px;
+                                font-weight: bold;
+                                font-size: 14px;
+                                font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+                                text-align: center;
+                                min-height: 65px;
+                            }}
+                            QPushButton:hover {{
+                                background: {theme['button_hover']};
+                                border: 3px solid #ff6666;
+                            }}
+                        """)
+                        # 更新按钮文本显示录屏状态
+                        icon_symbol = "⏹️"  # 停止图标
+                        display_name = self.truncate_text(cmd['name'], max_length=8)
+                        widget.setText(f"{icon_symbol} {display_name}")
+                    else:
+                        # 正常状态：恢复原始样式
+                        widget.setStyleSheet(f"""
+                            QPushButton {{
+                                background: {theme['button_bg']};
+                                color: {theme['button_text']};
+                                border: 3px solid {theme['button_border']};
+                                border-radius: 12px;
+                                font-weight: bold;
+                                font-size: 14px;
+                                font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+                                text-align: center;
+                                min-height: 65px;
+                            }}
+                            QPushButton:hover {{
+                                background: {theme['button_hover']};
+                                border: 3px solid {theme['accent_color']};
+                            }}
+                        """)
+                        # 恢复原始按钮文本
+                        icon_symbol = self.get_command_icon_symbol(cmd.get('icon', 'terminal'))
+                        display_name = self.truncate_text(cmd['name'], max_length=8)
+                        widget.setText(f"{icon_symbol} {display_name}")
+                    break
+
+    def run_command_with_progress(self, command, description):
+        """执行命令并显示进度"""
         # 创建命令执行动画效果
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
-        self.progress_bar.setFormat(f"正在准备 {cmd_name} %p%")
+        self.progress_bar.setFormat(f"正在执行 {description} %p%")
         
         # 进度条动画
         self.progress_animation = QPropertyAnimation(self.progress_bar, b"value")
@@ -2516,140 +3129,8 @@ class CommandManager(QMainWindow):
         self.progress_animation.setEasingCurve(QEasingCurve.OutCubic)
         self.progress_animation.start()
         
-        # 根据命令类型处理
-        if cmd_type == 'upload':
-            # 选择本地文件
-            local_path, _ = QFileDialog.getOpenFileName(self, "选择要上传的文件")
-            if not local_path:
-                self.progress_bar.setVisible(False)
-                self.log_message("已取消文件上传", info=True)
-                return
-            
-            # 获取远程路径
-            input_dialog = QInputDialog(self)
-            input_dialog.setWindowFlags(input_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-            input_dialog.setInputMode(QInputDialog.TextInput)
-            input_dialog.setWindowTitle("远程路径")
-            input_dialog.setLabelText("请输入远程设备上的路径:")
-            input_dialog.resize(400, 200)
-            ok = input_dialog.exec_()
-            remote_path = input_dialog.textValue()
-            if not ok or not remote_path:
-                self.progress_bar.setVisible(False)
-                self.log_message("已取消文件上传", info=True)
-                return
-            
-            # 替换命令中的占位符
-            cmd_content = cmd_content.replace('{local_path}', f'"{local_path}"')
-            cmd_content = cmd_content.replace('{remote_path}', f'"{remote_path}"')
-            self.log_message(f"已选择文件: {local_path}", info=True)
-            
-        elif cmd_type == 'download':
-            # 获取远程文件路径
-            input_dialog = QInputDialog(self)
-            input_dialog.setWindowFlags(input_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-            input_dialog.setInputMode(QInputDialog.TextInput)
-            input_dialog.setWindowTitle("远程文件")
-            input_dialog.setLabelText("请输入要下载的远程文件路径:")
-            input_dialog.resize(400, 200)
-            ok = input_dialog.exec_()
-            remote_path = input_dialog.textValue()
-            if not ok or not remote_path:
-                self.progress_bar.setVisible(False)
-                self.log_message("已取消文件下载", info=True)
-                return
-            
-            # 选择本地保存路径
-            local_path, _ = QFileDialog.getSaveFileName(self, "保存文件到")
-            if not local_path:
-                # 如果用户没有选择保存路径，使用当前目录
-                local_path = os.path.join(os.getcwd(), os.path.basename(remote_path))
-            
-            # 替换命令中的占位符
-            cmd_content = cmd_content.replace('{remote_path}', f'"{remote_path}"')
-            cmd_content = cmd_content.replace('{local_path}', f'"{local_path}"')
-            self.log_message(f"将保存到: {local_path}", info=True)
-            
-        elif cmd_type == 'screenshot':
-            # 自动处理截图命令，不需要用户输入
-            import datetime
-            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-            
-            # 替换命令中的时间戳占位符
-            cmd_content = cmd_content.replace('{timestamp}', timestamp)
-            self.log_message(f"截图将保存在程序目录下: screenshot_{timestamp}.png", info=True)
-            
-        elif cmd_type == 'normal' and '{' in cmd_content and '}' in cmd_content:
-            # 处理包含占位符的普通命令
-            placeholders = [p.split('}')[0] for p in cmd_content.split('{')[1:]]
-            
-            for placeholder in placeholders:
-                input_dialog = QInputDialog(self)
-                input_dialog.setWindowFlags(input_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-                input_dialog.setInputMode(QInputDialog.TextInput)
-                input_dialog.setWindowTitle(f"输入{placeholder}")
-                input_dialog.setLabelText(f"请输入{placeholder}:")
-                input_dialog.resize(400, 200)
-                ok = input_dialog.exec_()
-                value = input_dialog.textValue()
-                if not ok:
-                    self.progress_bar.setVisible(False)
-                    self.log_message("已取消命令执行", info=True)
-                    return
-                
-                cmd_content = cmd_content.replace(f'{{{placeholder}}}', f'"{value}"')
-        
-        # 更新进度条状态
-        self.progress_animation.stop()
-        self.progress_animation.setStartValue(20)
-        self.progress_animation.setEndValue(40)
-        self.progress_animation.setDuration(500)
-        self.progress_animation.start()
-        
-        # 执行命令
-        QTimer.singleShot(300, lambda: self.run_command(cmd_content))
-    
-    def run_command(self, command):
-        # 如果有正在运行的命令，先停止它
-        if self.command_thread and self.command_thread.isRunning():
-            self.command_thread.stop()
-            self.command_thread.wait()
-        
-        # 创建并启动新的命令线程，传递当前主题
-        current_theme = self.themes[self.current_theme]
-        self.command_thread = CommandThread(command, current_theme)
-        self.command_thread.output_signal.connect(self.update_terminal)
-        self.command_thread.progress_signal.connect(self.update_progress)
-        self.command_thread.finished_signal.connect(self.command_finished)
-        
-        # 显示进度条并更新状态
-        self.progress_bar.setValue(40)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setFormat("正在执行命令 %p%")
-        
-        # 添加命令执行提示到终端，使用主题颜色，并在其后加一空行，便于与输出分隔
-        self.terminal.moveCursor(QTextCursor.End)
-        prompt_color = current_theme['accent_color']
-        self.terminal.append(f"<span style='color:{prompt_color}; font-weight:bold; font-size:18px;'>$ {command}</span>")
-        self.terminal.append("")
-        self.terminal.moveCursor(QTextCursor.End)
-        
-        # 更新进度条动画
-        self.progress_animation = QPropertyAnimation(self.progress_bar, b"value")
-        self.progress_animation.setStartValue(40)
-        self.progress_animation.setEndValue(70)
-        self.progress_animation.setDuration(1000)
-        self.progress_animation.setEasingCurve(QEasingCurve.InOutQuad)
-        self.progress_animation.start()
-        
-        # 禁用所有命令按钮，直到命令执行完成
-        for i in range(self.commands_grid.count()):
-            widget = self.commands_grid.itemAt(i).widget()
-            if widget:
-                widget.setEnabled(False)
-                
-        # 启动线程
-        self.command_thread.start()
+        # 延迟执行命令
+        QTimer.singleShot(300, lambda: self.run_command(command))
 
     def copy_command_text(self, cmd):
         clipboard = QApplication.clipboard()
@@ -2657,24 +3138,37 @@ class CommandManager(QMainWindow):
         self.log_message("命令已复制到剪贴板", info=True)
 
     def open_edit_dialog(self, cmd):
-        # 打开对话框并自动定位到指定命令进行编辑
-        dialog = CommandManagerDialog(self.commands, self)
-        def do_focus():
-            # 1) 切到列表页
-            tabs = dialog.findChild(QTabWidget)
-            if tabs:
-                tabs.setCurrentIndex(0)
-            # 2) 在列表中选中该命令
-            for i in range(dialog.command_list.count()):
-                item = dialog.command_list.item(i)
-                data = item.data(Qt.UserRole)
-                if data.get('name') == cmd.get('name') and data.get('command') == cmd.get('command'):
-                    dialog.command_list.setCurrentRow(i)
-                    break
-            # 3) 触发编辑
-            dialog.edit_command()
-        QTimer.singleShot(0, do_focus)
-        dialog.exec_()
+        # 防止重复打开对话框
+        if hasattr(self, '_edit_dialog_open') and self._edit_dialog_open:
+            return
+        
+        try:
+            self._edit_dialog_open = True
+            # 打开对话框并自动定位到指定命令进行编辑
+            dialog = CommandManagerDialog(self.commands, self)
+            def do_focus():
+                try:
+                    # 1) 切到列表页
+                    tabs = dialog.findChild(QTabWidget)
+                    if tabs:
+                        tabs.setCurrentIndex(0)
+                    # 2) 在列表中选中该命令
+                    for i in range(dialog.command_list.count()):
+                        item = dialog.command_list.item(i)
+                        data = item.data(Qt.UserRole)
+                        if data.get('name') == cmd.get('name') and data.get('command') == cmd.get('command'):
+                            dialog.command_list.setCurrentRow(i)
+                            break
+                    # 3) 触发编辑
+                    dialog.edit_command()
+                except Exception as e:
+                    print(f"对话框焦点设置出错: {e}")
+            QTimer.singleShot(0, do_focus)
+            dialog.exec_()
+        except Exception as e:
+            print(f"打开编辑对话框出错: {e}")
+        finally:
+            self._edit_dialog_open = False
 
     def delete_command_from_ui(self, cmd):
         # 根据名称和内容匹配删除
@@ -2787,13 +3281,21 @@ class CommandManager(QMainWindow):
         self.terminal.append(f"<span style='color:{theme['terminal_text']}; font-size:18px;'>终端已清除。准备就绪...</span>")
     
     def show_command_manager(self):
-        # 显示命令管理对话框
-        dialog = CommandManagerDialog(self.commands, self)
-        # 设置默认显示模板库选项卡
-        tabs = dialog.findChild(QTabWidget)
-        if tabs:
-            tabs.setCurrentIndex(2)  # 索引2对应模板库选项卡
-        dialog.exec_()
+        # 防止重复打开对话框
+        if hasattr(self, '_command_manager_dialog_open') and self._command_manager_dialog_open:
+            return
+            
+        try:
+            self._command_manager_dialog_open = True
+            # 显示命令管理对话框
+            dialog = CommandManagerDialog(self.commands, self)
+            # 设置默认显示模板库选项卡
+            tabs = dialog.findChild(QTabWidget)
+            if tabs:
+                tabs.setCurrentIndex(2)  # 索引2对应模板库选项卡
+            dialog.exec_()
+        finally:
+            self._command_manager_dialog_open = False
         # 关闭返回后刷新（防止子对话框变更未刷）
         self.update_command_buttons()
     
@@ -2803,6 +3305,161 @@ class CommandManager(QMainWindow):
         dialog.exec_()
         # 刷新回收站数据
         self.load_deleted_commands()
+    
+    def show_log_viewer(self):
+        """显示日志查看器"""
+        try:
+            logging.info("打开日志查看器")
+            
+            # 创建日志查看对话框
+            log_dialog = QDialog(self)
+            log_dialog.setWindowTitle("崩溃日志查看器")
+            log_dialog.setWindowFlags(log_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+            log_dialog.resize(800, 600)
+            
+            # 设置对话框样式
+            theme = self.themes[self.current_theme]
+            log_dialog.setStyleSheet(f"""
+                QDialog {{
+                    background: {theme['window_bg']};
+                    color: {theme['terminal_text']};
+                }}
+                QTextEdit {{
+                    background: {theme['terminal_bg']};
+                    color: {theme['terminal_text']};
+                    border: 2px solid {theme['accent_color']};
+                    border-radius: 8px;
+                    padding: 10px;
+                    font-family: 'Consolas', 'Monaco', monospace;
+                    font-size: 12px;
+                }}
+                QPushButton {{
+                    background: {theme['button_bg']};
+                    color: {theme['button_text']};
+                    border: 2px solid {theme['button_border']};
+                    border-radius: 6px;
+                    padding: 8px 16px;
+                    font-weight: bold;
+                    min-width: 100px;
+                }}
+                QPushButton:hover {{
+                    background: {theme['button_hover']};
+                }}
+                QLabel {{
+                    color: {theme['terminal_text']};
+                    font-weight: bold;
+                    font-size: 14px;
+                }}
+            """)
+            
+            layout = QVBoxLayout(log_dialog)
+            
+            # 标题
+            title_label = QLabel("📋 应用程序崩溃日志")
+            title_label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(title_label)
+            
+            # 日志文件路径信息
+            path_label = QLabel(f"日志文件位置: {LOG_FILE}")
+            layout.addWidget(path_label)
+            
+            # 日志内容显示区域
+            log_text = QTextEdit()
+            log_text.setReadOnly(True)
+            
+            # 读取日志文件内容
+            try:
+                if os.path.exists(LOG_FILE):
+                    with open(LOG_FILE, 'r', encoding='utf-8') as f:
+                        log_content = f.read()
+                        if log_content.strip():
+                            log_text.setPlainText(log_content)
+                        else:
+                            log_text.setPlainText("日志文件为空，暂无崩溃记录。")
+                else:
+                    log_text.setPlainText("日志文件不存在，可能是首次运行或尚未发生崩溃。")
+            except Exception as e:
+                log_text.setPlainText(f"读取日志文件失败: {e}")
+                logging.error(f"读取日志文件失败: {e}", exc_info=True)
+            
+            layout.addWidget(log_text)
+            
+            # 按钮区域
+            button_layout = QHBoxLayout()
+            
+            # 刷新按钮
+            refresh_btn = QPushButton("🔄 刷新")
+            refresh_btn.clicked.connect(lambda: self.refresh_log_content(log_text))
+            button_layout.addWidget(refresh_btn)
+            
+            # 清空日志按钮
+            clear_btn = QPushButton("🗑️ 清空日志")
+            clear_btn.clicked.connect(lambda: self.clear_log_file(log_text))
+            button_layout.addWidget(clear_btn)
+            
+            # 打开日志文件夹按钮
+            folder_btn = QPushButton("📁 打开文件夹")
+            folder_btn.clicked.connect(self.open_log_folder)
+            button_layout.addWidget(folder_btn)
+            
+            layout.addLayout(button_layout)
+            
+            # 显示对话框
+            log_dialog.exec_()
+            
+        except Exception as e:
+            error_msg = f"打开日志查看器失败: {e}"
+            logging.error(error_msg, exc_info=True)
+            QMessageBox.critical(self, "错误", error_msg)
+    
+    def refresh_log_content(self, log_text):
+        """刷新日志内容"""
+        try:
+            if os.path.exists(LOG_FILE):
+                with open(LOG_FILE, 'r', encoding='utf-8') as f:
+                    log_content = f.read()
+                    if log_content.strip():
+                        log_text.setPlainText(log_content)
+                    else:
+                        log_text.setPlainText("日志文件为空，暂无崩溃记录。")
+            else:
+                log_text.setPlainText("日志文件不存在，可能是首次运行或尚未发生崩溃。")
+            logging.info("日志内容已刷新")
+        except Exception as e:
+            error_msg = f"刷新日志内容失败: {e}"
+            logging.error(error_msg, exc_info=True)
+            log_text.setPlainText(error_msg)
+    
+    def clear_log_file(self, log_text):
+        """清空日志文件"""
+        try:
+            reply = QMessageBox.question(self, "确认清空", "确定要清空所有日志记录吗？", 
+                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                if os.path.exists(LOG_FILE):
+                    with open(LOG_FILE, 'w', encoding='utf-8') as f:
+                        f.write('')
+                log_text.setPlainText("日志已清空")
+                logging.info("日志文件已清空")
+                QMessageBox.information(self, "清空成功", "日志文件已清空")
+        except Exception as e:
+            error_msg = f"清空日志文件失败: {e}"
+            logging.error(error_msg, exc_info=True)
+            QMessageBox.critical(self, "错误", error_msg)
+    
+    def open_log_folder(self):
+        """打开日志文件夹"""
+        try:
+            log_dir = os.path.dirname(LOG_FILE)
+            if os.path.exists(log_dir):
+                os.startfile(log_dir)
+                logging.info(f"已打开日志文件夹: {log_dir}")
+            else:
+                QMessageBox.warning(self, "警告", "日志文件夹不存在")
+        except Exception as e:
+            error_msg = f"打开日志文件夹失败: {e}"
+            logging.error(error_msg, exc_info=True)
+            QMessageBox.critical(self, "错误", error_msg)
 
 # 命令管理对话框
 class CommandManagerDialog(QDialog):
@@ -2903,12 +3560,73 @@ class CommandManagerDialog(QDialog):
         # 命令类型
         self.type_combo = QComboBox()
         self.type_combo.addItems([
-            "normal", "upload", "download", "screenshot", "terminal", "device", "file", "app",
+            "normal", "upload", "download", "screenshot", "screen_record", "terminal", "device", "file", "app",
             "system", "network", "memory", "cpu", "process", "service", "user", "group",
             "log", "config", "install", "uninstall", "update", "backup", "restore",
             "compress", "extract", "encrypt", "decrypt", "database", "web", "api"
         ])
         add_layout.addRow("命令类型:", self.type_combo)
+        
+        # 录屏专用字段（初始隐藏）
+        self.screen_record_widget = QWidget()
+        screen_record_layout = QFormLayout(self.screen_record_widget)
+        
+        # 开始录屏命令
+        start_command_row = QWidget()
+        start_command_row_layout = QHBoxLayout(start_command_row)
+        start_command_row_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.start_command_input = QLineEdit()
+        self.start_command_input.setPlaceholderText("例如: hdc shell screenrecord /data/local/tmp/screen_{timestamp}.mp4")
+        start_command_row_layout.addWidget(self.start_command_input)
+        
+        # 添加扩展按钮
+        start_expand_btn = QPushButton("📝")
+        start_expand_btn.setToolTip("扩大输入框")
+        start_expand_btn.setFixedSize(30, 30)
+        start_expand_btn.clicked.connect(lambda: self._expand_input_field(self.start_command_input))
+        start_command_row_layout.addWidget(start_expand_btn)
+        
+        screen_record_layout.addRow("开始录屏命令:", start_command_row)
+        
+        # 停止录屏命令
+        stop_command_row = QWidget()
+        stop_command_row_layout = QHBoxLayout(stop_command_row)
+        stop_command_row_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.stop_command_input = QLineEdit()
+        self.stop_command_input.setPlaceholderText("例如: hdc shell pkill screenrecord")
+        stop_command_row_layout.addWidget(self.stop_command_input)
+        
+        # 添加扩展按钮
+        stop_expand_btn = QPushButton("📝")
+        stop_expand_btn.setToolTip("扩大输入框")
+        stop_expand_btn.setFixedSize(30, 30)
+        stop_expand_btn.clicked.connect(lambda: self._expand_input_field(self.stop_command_input))
+        stop_command_row_layout.addWidget(stop_expand_btn)
+        
+        screen_record_layout.addRow("停止录屏命令:", stop_command_row)
+        
+        # 导出命令
+        export_command_row = QWidget()
+        export_command_row_layout = QHBoxLayout(export_command_row)
+        export_command_row_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.export_command_input = QLineEdit()
+        self.export_command_input.setPlaceholderText("例如: hdc file recv /data/local/tmp/screen_{timestamp}.mp4 ./")
+        export_command_row_layout.addWidget(self.export_command_input)
+        
+        # 添加扩展按钮
+        export_expand_btn = QPushButton("📝")
+        export_expand_btn.setToolTip("扩大输入框")
+        export_expand_btn.setFixedSize(30, 30)
+        export_expand_btn.clicked.connect(lambda: self._expand_input_field(self.export_command_input))
+        export_command_row_layout.addWidget(export_expand_btn)
+        
+        screen_record_layout.addRow("导出命令:", export_command_row)
+        
+        add_layout.addRow(self.screen_record_widget)
+        self.screen_record_widget.setVisible(False)
         
         # 添加类型变化监听，显示当前选择的图标
         self.icon_preview = QLabel()
@@ -2919,6 +3637,7 @@ class CommandManagerDialog(QDialog):
         
         # 连接类型选择变化信号
         self.type_combo.currentTextChanged.connect(self.update_icon_preview)
+        self.type_combo.currentTextChanged.connect(self.toggle_screen_record_fields)
         
         # 添加图标预览
         add_layout.addRow("图标预览:", self.icon_preview)
@@ -3003,6 +3722,13 @@ class CommandManagerDialog(QDialog):
         else:
             # 如果没有父窗口，使用默认图标
             self.icon_preview.setText("⭐")
+    
+    def toggle_screen_record_fields(self, cmd_type):
+        """根据命令类型显示或隐藏录屏专用字段"""
+        is_screen_record = cmd_type == "screen_record"
+        self.screen_record_widget.setVisible(is_screen_record)
+        # 当选择录屏类型时，隐藏普通命令输入框
+        self.command_input.setVisible(not is_screen_record)
     
     def apply_theme(self):
         """根据父窗口主题应用样式"""
@@ -3306,6 +4032,13 @@ class CommandManagerDialog(QDialog):
     
     def set_dialog_icon(self):
         """设置对话框图标"""
+        # 使用类级别的标志来防止重复加载
+        if not hasattr(self.__class__, '_global_icon_loaded'):
+            self.__class__._global_icon_loaded = False
+            
+        if self.__class__._global_icon_loaded:
+            return
+        
         # 获取资源路径
         if getattr(sys, 'frozen', False):
             # 如果是打包的应用，使用_MEIPASS中的资源路径
@@ -3324,12 +4057,14 @@ class CommandManagerDialog(QDialog):
         if os.path.exists(svg_path):
             self.setWindowIcon(QIcon(svg_path))
             print(f"已加载图标: {svg_path}")
+            self.__class__._global_icon_loaded = True
         else:
             # 备用方案：使用原始设置图标
             fallback_path = os.path.join(icon_dir, 'gear.svg')
             if os.path.exists(fallback_path):
                 self.setWindowIcon(QIcon(fallback_path))
                 print(f"已加载备用图标: {fallback_path}")
+                self.__class__._global_icon_loaded = True
             else:
                 print(f"无法加载图标，路径不存在: {svg_path} 或 {fallback_path}")
                 # 尝试使用终端图标作为最后的备用方案
@@ -3337,6 +4072,7 @@ class CommandManagerDialog(QDialog):
                 if os.path.exists(terminal_icon):
                     self.setWindowIcon(QIcon(terminal_icon))
                     print(f"已加载终端图标: {terminal_icon}")
+                    self.__class__._global_icon_loaded = True
                 else:
                     print("所有图标路径均不存在")
     
@@ -3357,41 +4093,55 @@ class CommandManagerDialog(QDialog):
     
     def expand_command_input(self):
         """扩展命令输入框"""
+        self._expand_input_field(self.command_input)
+    
+    def _expand_input_field(self, input_field, parent_dialog=None):
+        """通用的输入框扩展方法"""
         # 创建扩展输入对话框
-        dialog = QDialog(self)
+        dialog = QDialog(parent_dialog or self)
         dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         dialog.setWindowTitle("命令内容编辑器")
         dialog.setMinimumSize(600, 400)
         
         # 应用主题样式
-        if hasattr(self, 'parent_window') and self.parent_window:
-            theme = self.parent_window.themes[self.parent_window.current_theme]
-            dialog.setStyleSheet(f"""
-                QDialog {{
-                     background: {theme['window_bg']};
-                     color: {theme['terminal_text']};
-                }}
-                QTextEdit {{
-                    background: {theme['terminal_bg']};
-                    color: {theme['terminal_text']};
-                    border: 2px solid {theme['accent_color']};
-                    border-radius: 8px;
-                    padding: 8px;
-                    font-family: 'Consolas', 'Monaco', monospace;
-                    font-size: 12px;
-                }}
-                QPushButton {{
-                    background: {theme['button_bg']};
-                    color: {theme['button_text']};
-                    border: 2px solid {theme['button_border']};
-                    border-radius: 6px;
-                    padding: 8px 16px;
-                    font-weight: bold;
-                }}
-                QPushButton:hover {{
-                    background: {theme['button_hover']};
-                }}
-            """)
+        try:
+            # 尝试获取主题配置
+            theme = None
+            if hasattr(self, 'parent_window') and self.parent_window:
+                theme = self.parent_window.themes[self.parent_window.current_theme]
+            elif hasattr(self, 'themes') and hasattr(self, 'current_theme'):
+                theme = self.themes[self.current_theme]
+            
+            if theme:
+                dialog.setStyleSheet(f"""
+                    QDialog {{
+                         background: {theme['window_bg']};
+                         color: {theme['terminal_text']};
+                    }}
+                    QTextEdit {{
+                        background: {theme['terminal_bg']};
+                        color: {theme['terminal_text']};
+                        border: 2px solid {theme['accent_color']};
+                        border-radius: 8px;
+                        padding: 8px;
+                        font-family: 'Consolas', 'Monaco', monospace;
+                        font-size: 12px;
+                    }}
+                    QPushButton {{
+                        background: {theme['button_bg']};
+                        color: {theme['button_text']};
+                        border: 2px solid {theme['button_border']};
+                        border-radius: 6px;
+                        padding: 8px 16px;
+                        font-weight: bold;
+                    }}
+                    QPushButton:hover {{
+                        background: {theme['button_hover']};
+                    }}
+                """)
+        except Exception as e:
+            # 如果主题应用失败，使用默认样式
+            print(f"主题应用失败: {e}")
         
         # 布局
         layout = QVBoxLayout(dialog)
@@ -3403,7 +4153,7 @@ class CommandManagerDialog(QDialog):
         
         # 文本编辑器
         text_edit = QTextEdit()
-        text_edit.setPlainText(self.command_input.text())
+        text_edit.setPlainText(input_field.text())
         text_edit.setTabStopWidth(40)  # 设置Tab宽度
         layout.addWidget(text_edit)
         
@@ -3430,20 +4180,41 @@ class CommandManagerDialog(QDialog):
         if dialog.exec_() == QDialog.Accepted:
             # 获取编辑后的文本并更新到原输入框
             new_text = text_edit.toPlainText().strip()
-            self.command_input.setText(new_text)
+            input_field.setText(new_text)
     
     def add_command_from_form(self):
         # 从表单添加命令
         name = self.name_input.text().strip()
-        command = self.command_input.text().strip()
         cmd_type = self.type_combo.currentText()
         
         # 根据命令类型自动设置图标
         icon = cmd_type
         
-        if not name or not command:
-            QMessageBox.warning(self, "输入错误", "命令名称和内容不能为空")
+        if not name:
+            QMessageBox.warning(self, "输入错误", "命令名称不能为空")
             return
+        
+        # 处理录屏命令的特殊逻辑
+        if cmd_type == "screen_record":
+            start_command = self.start_command_input.text().strip()
+            stop_command = self.stop_command_input.text().strip()
+            export_command = self.export_command_input.text().strip()
+            
+            if not start_command or not stop_command or not export_command:
+                QMessageBox.warning(self, "输入错误", "录屏命令的开始、停止和导出命令都不能为空")
+                return
+            
+            # 将三个命令组合成一个JSON格式的命令
+            command = json.dumps({
+                "start": start_command,
+                "stop": stop_command,
+                "export": export_command
+            }, ensure_ascii=False)
+        else:
+            command = self.command_input.text().strip()
+            if not command:
+                QMessageBox.warning(self, "输入错误", "命令内容不能为空")
+                return
         
         # 添加新命令
         self.commands.append({
@@ -3456,13 +4227,19 @@ class CommandManagerDialog(QDialog):
         # 更新列表并清空表单
         self.update_command_list()
         self.name_input.clear()
-        self.command_input.clear()
+        if cmd_type == "screen_record":
+            self.start_command_input.clear()
+            self.stop_command_input.clear()
+            self.export_command_input.clear()
+        else:
+            self.command_input.clear()
         
         # 实时更新主窗口
         if self.parent_window:
             self.parent_window.commands = self.commands.copy()
             self.parent_window.save_config()
-            self.parent_window.update_command_buttons()
+            # 延迟更新按钮，避免重复创建
+            QTimer.singleShot(100, self.parent_window.update_command_buttons)
         
         # 切换回命令列表选项卡
         tabs = self.findChild(QTabWidget)
@@ -3494,12 +4271,93 @@ class CommandManagerDialog(QDialog):
         name_input = QLineEdit(cmd['name'])
         layout.addRow("命令名称:", name_input)
         
-        # 命令内容
+        # 命令内容 - 根据命令类型显示不同的输入界面
+        cmd_type = cmd.get('type', 'normal')
+        
+        # 普通命令输入框
         command_row = QWidget()
         command_row_layout = QHBoxLayout(command_row)
         command_row_layout.setContentsMargins(0, 0, 0, 0)
         
-        command_input = QLineEdit(cmd['command'])
+        command_input = QLineEdit()
+        
+        # 录屏命令专用输入框
+        screen_record_widget = QWidget()
+        screen_record_layout = QVBoxLayout(screen_record_widget)
+        screen_record_layout.setContentsMargins(0, 0, 0, 0)
+        
+        start_command_input = QLineEdit()
+        start_command_input.setPlaceholderText("开始录屏命令，例如: hdc shell screenrecord /data/local/tmp/screen.mp4")
+        
+        stop_command_input = QLineEdit()
+        stop_command_input.setPlaceholderText("停止录屏命令，例如: hdc shell pkill -SIGINT screenrecord")
+        
+        export_command_input = QLineEdit()
+        export_command_input.setPlaceholderText("导出命令，例如: hdc file recv /data/local/tmp/screen.mp4 ./screen.mp4")
+        
+        # 开始录屏命令行
+        start_row = QWidget()
+        start_row_layout = QHBoxLayout(start_row)
+        start_row_layout.setContentsMargins(0, 0, 0, 0)
+        start_row_layout.addWidget(start_command_input)
+        
+        start_expand_btn = QPushButton("📝")
+        start_expand_btn.setToolTip("扩大输入框")
+        start_expand_btn.setFixedSize(30, 30)
+        start_expand_btn.clicked.connect(lambda: self._expand_input_field(start_command_input, dialog))
+        start_row_layout.addWidget(start_expand_btn)
+        
+        # 停止录屏命令行
+        stop_row = QWidget()
+        stop_row_layout = QHBoxLayout(stop_row)
+        stop_row_layout.setContentsMargins(0, 0, 0, 0)
+        stop_row_layout.addWidget(stop_command_input)
+        
+        stop_expand_btn = QPushButton("📝")
+        stop_expand_btn.setToolTip("扩大输入框")
+        stop_expand_btn.setFixedSize(30, 30)
+        stop_expand_btn.clicked.connect(lambda: self._expand_input_field(stop_command_input, dialog))
+        stop_row_layout.addWidget(stop_expand_btn)
+        
+        # 导出命令行
+        export_row = QWidget()
+        export_row_layout = QHBoxLayout(export_row)
+        export_row_layout.setContentsMargins(0, 0, 0, 0)
+        export_row_layout.addWidget(export_command_input)
+        
+        export_expand_btn = QPushButton("📝")
+        export_expand_btn.setToolTip("扩大输入框")
+        export_expand_btn.setFixedSize(30, 30)
+        export_expand_btn.clicked.connect(lambda: self._expand_input_field(export_command_input, dialog))
+        export_row_layout.addWidget(export_expand_btn)
+        
+        screen_record_layout.addWidget(QLabel("开始录屏命令:"))
+        screen_record_layout.addWidget(start_row)
+        screen_record_layout.addWidget(QLabel("停止录屏命令:"))
+        screen_record_layout.addWidget(stop_row)
+        screen_record_layout.addWidget(QLabel("导出命令:"))
+        screen_record_layout.addWidget(export_row)
+        
+        # 根据命令类型填充数据
+        if cmd_type == 'screen_record':
+            try:
+                # 尝试解析JSON格式的录屏命令
+                screen_commands = json.loads(cmd['command'])
+                start_command_input.setText(screen_commands.get('start', ''))
+                stop_command_input.setText(screen_commands.get('stop', ''))
+                export_command_input.setText(screen_commands.get('export', ''))
+                screen_record_widget.setVisible(True)
+                command_row.setVisible(False)
+            except (json.JSONDecodeError, TypeError):
+                # 如果不是JSON格式，显示在普通输入框中
+                command_input.setText(cmd['command'])
+                screen_record_widget.setVisible(False)
+                command_row.setVisible(True)
+        else:
+            command_input.setText(cmd['command'])
+            screen_record_widget.setVisible(False)
+            command_row.setVisible(True)
+        
         command_row_layout.addWidget(command_input)
         
         # 添加扩展按钮
@@ -3508,86 +4366,11 @@ class CommandManagerDialog(QDialog):
         expand_btn.setFixedSize(30, 30)
         
         # 为编辑对话框创建扩展功能
-        def expand_edit_input():
-            # 创建扩展输入对话框
-            edit_dialog = QDialog(dialog)
-            edit_dialog.setWindowFlags(edit_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-            edit_dialog.setWindowTitle("命令内容编辑器")
-            edit_dialog.setMinimumSize(600, 400)
-            
-            # 应用主题样式
-            if self.parent_window:
-                theme = self.parent_window.themes[self.parent_window.current_theme]
-                edit_dialog.setStyleSheet(f"""
-                    QDialog {{
-                         background: {theme['window_bg']};
-                         color: {theme['terminal_text']};
-                    }}
-                    QTextEdit {{
-                        background: {theme['terminal_bg']};
-                        color: {theme['terminal_text']};
-                        border: 2px solid {theme['accent_color']};
-                        border-radius: 8px;
-                        padding: 8px;
-                        font-family: 'Consolas', 'Monaco', monospace;
-                        font-size: 12px;
-                    }}
-                    QPushButton {{
-                        background: {theme['button_bg']};
-                        color: {theme['button_text']};
-                        border: 2px solid {theme['button_border']};
-                        border-radius: 6px;
-                        padding: 8px 16px;
-                        font-weight: bold;
-                    }}
-                    QPushButton:hover {{
-                        background: {theme['button_hover']};
-                    }}
-                """)
-            
-            # 布局
-            edit_layout = QVBoxLayout(edit_dialog)
-            
-            # 提示标签
-            tip_label = QLabel("💡 提示: 在这里可以更方便地编辑长命令，支持多行输入")
-            tip_label.setStyleSheet("color: #888; margin-bottom: 10px;")
-            edit_layout.addWidget(tip_label)
-            
-            # 文本编辑器
-            text_edit = QTextEdit()
-            text_edit.setPlainText(command_input.text())
-            text_edit.setTabStopWidth(40)
-            edit_layout.addWidget(text_edit)
-            
-            # 按钮布局
-            buttons_layout = QHBoxLayout()
-            
-            # 确定按钮
-            ok_btn = QPushButton("确定")
-            ok_btn.clicked.connect(edit_dialog.accept)
-            buttons_layout.addWidget(ok_btn)
-            
-            # 取消按钮
-            cancel_btn = QPushButton("取消")
-            cancel_btn.clicked.connect(edit_dialog.reject)
-            buttons_layout.addWidget(cancel_btn)
-            
-            edit_layout.addLayout(buttons_layout)
-            
-            # 快捷键
-            QShortcut(QKeySequence("Ctrl+Return"), edit_dialog, activated=edit_dialog.accept)
-            QShortcut(QKeySequence("Escape"), edit_dialog, activated=edit_dialog.reject)
-            
-            # 显示对话框
-            if edit_dialog.exec_() == QDialog.Accepted:
-                # 获取编辑后的文本并更新到原输入框
-                new_text = text_edit.toPlainText().strip()
-                command_input.setText(new_text)
-        
-        expand_btn.clicked.connect(expand_edit_input)
+        expand_btn.clicked.connect(lambda: self._expand_input_field(command_input, dialog))
         command_row_layout.addWidget(expand_btn)
         
         layout.addRow("命令内容:", command_row)
+        layout.addRow("", screen_record_widget)  # 录屏专用输入框
         
         # 命令类型
         type_combo = QComboBox()
@@ -3595,9 +4378,18 @@ class CommandManagerDialog(QDialog):
             "normal", "upload", "download", "screenshot", "terminal", "device", "file", "app",
             "system", "network", "memory", "cpu", "process", "service", "user", "group",
             "log", "config", "install", "uninstall", "update", "backup", "restore",
-            "compress", "extract", "encrypt", "decrypt", "database", "web", "api"
+            "compress", "extract", "encrypt", "decrypt", "database", "web", "api", "screen_record"
         ])
         type_combo.setCurrentText(cmd.get('type', 'normal'))
+        
+        # 添加类型切换逻辑
+        def toggle_command_fields(cmd_type):
+            is_screen_record = cmd_type == "screen_record"
+            screen_record_widget.setVisible(is_screen_record)
+            command_row.setVisible(not is_screen_record)
+        
+        type_combo.currentTextChanged.connect(toggle_command_fields)
+        
         layout.addRow("命令类型:", type_combo)
         
         # 添加图标预览
@@ -3638,10 +4430,32 @@ class CommandManagerDialog(QDialog):
             # 获取命令类型并自动设置图标
             cmd_type = type_combo.currentText()
             
+            # 根据命令类型处理命令内容
+            if cmd_type == "screen_record":
+                start_cmd = start_command_input.text().strip()
+                stop_cmd = stop_command_input.text().strip()
+                export_cmd = export_command_input.text().strip()
+                
+                if not start_cmd or not stop_cmd or not export_cmd:
+                    QMessageBox.warning(dialog, "输入错误", "录屏命令的开始、停止和导出命令都不能为空")
+                    return
+                
+                # 将三个命令组合成JSON格式
+                command_content = json.dumps({
+                    "start": start_cmd,
+                    "stop": stop_cmd,
+                    "export": export_cmd
+                }, ensure_ascii=False)
+            else:
+                command_content = command_input.text().strip()
+                if not command_content:
+                    QMessageBox.warning(dialog, "输入错误", "命令内容不能为空")
+                    return
+            
             # 更新命令
             self.commands[index] = {
                 "name": name_input.text().strip(),
-                "command": command_input.text().strip(),
+                "command": command_content,
                 "type": cmd_type,
                 "icon": cmd_type  # 图标与命令类型保持一致
             }
@@ -3653,7 +4467,8 @@ class CommandManagerDialog(QDialog):
             if self.parent_window:
                 self.parent_window.commands = self.commands.copy()
                 self.parent_window.save_config()
-                self.parent_window.update_command_buttons()
+                # 延迟更新按钮，避免重复创建
+                QTimer.singleShot(100, self.parent_window.update_command_buttons)
     
     def delete_command(self):
         # 删除选中的命令
@@ -3685,7 +4500,8 @@ class CommandManagerDialog(QDialog):
             if self.parent_window:
                 self.parent_window.commands = self.commands.copy()
                 self.parent_window.save_config()
-                self.parent_window.update_command_buttons()
+                # 延迟更新按钮，避免重复创建
+                QTimer.singleShot(100, self.parent_window.update_command_buttons)
                 
             QMessageBox.information(self, "删除成功", f"命令 '{deleted_cmd['name']}' 已移至回收站")
     
@@ -3709,7 +4525,8 @@ class CommandManagerDialog(QDialog):
             if self.parent_window:
                 self.parent_window.commands = self.commands.copy()
                 self.parent_window.save_config()
-                self.parent_window.update_command_buttons()
+                # 延迟更新按钮，避免重复创建
+                QTimer.singleShot(100, self.parent_window.update_command_buttons)
     
     def move_command_down(self):
         # 下移选中的命令
@@ -3731,7 +4548,8 @@ class CommandManagerDialog(QDialog):
             if self.parent_window:
                 self.parent_window.commands = self.commands.copy()
                 self.parent_window.save_config()
-                self.parent_window.update_command_buttons()
+                # 延迟更新按钮，避免重复创建
+                QTimer.singleShot(100, self.parent_window.update_command_buttons)
     
     def load_templates(self):
         """加载模板库数据"""
@@ -3847,14 +4665,22 @@ class CommandManagerDialog(QDialog):
     
     def save_changes(self):
         """保存更改并关闭对话框"""
-        # 更新主窗口的命令列表
-        if self.parent_window:
-            self.parent_window.commands = self.commands.copy()
-            self.parent_window.save_config()
-            self.parent_window.update_command_buttons()
-        
-        # 关闭对话框
-        self.accept()
+        try:
+            # 更新主窗口的命令列表
+            if self.parent_window and hasattr(self, 'commands'):
+                self.parent_window.commands = self.commands.copy()
+                self.parent_window.save_config()
+                # 延迟更新按钮，避免在对话框关闭前重复创建
+                QTimer.singleShot(100, self.parent_window.update_command_buttons)
+            
+            # 关闭对话框
+            self.accept()
+        except Exception as e:
+            print(f"保存更改时出错: {e}")
+            import traceback
+            traceback.print_exc()
+            # 即使出错也要关闭对话框
+            self.accept()
 
 # 回收站对话框
 class RecycleBinDialog(QDialog):
@@ -3930,8 +4756,16 @@ class RecycleBinDialog(QDialog):
     
     def set_dialog_icon(self):
         """设置对话框图标"""
+        # 使用类级别的标志来防止重复加载
+        if not hasattr(self.__class__, '_global_icon_loaded'):
+            self.__class__._global_icon_loaded = False
+            
+        if self.__class__._global_icon_loaded:
+            return
+            
         if self.parent_window:
             self.setWindowIcon(self.parent_window.windowIcon())
+            self.__class__._global_icon_loaded = True
     
     def apply_theme(self):
         """应用主题样式"""
@@ -4073,9 +4907,159 @@ class RecycleBinDialog(QDialog):
             self.update_command_list()
             
             QMessageBox.information(self, "清空成功", "回收站已清空")
+    
+    def refresh_log_content(self, log_text):
+        """刷新日志内容"""
+        try:
+            if os.path.exists(LOG_FILE):
+                with open(LOG_FILE, 'r', encoding='utf-8') as f:
+                    log_content = f.read()
+                    if log_content.strip():
+                        log_text.setPlainText(log_content)
+                        # 滚动到底部显示最新日志
+                        log_text.moveCursor(QTextCursor.End)
+                    else:
+                        log_text.setPlainText("日志文件为空，暂无崩溃记录。")
+            else:
+                log_text.setPlainText("日志文件不存在。")
+            logging.info("日志内容已刷新")
+        except Exception as e:
+            error_msg = f"刷新日志内容失败: {e}"
+            logging.error(error_msg, exc_info=True)
+            log_text.setPlainText(error_msg)
+    
+    def clear_log_file(self, log_text):
+        """清空日志文件"""
+        try:
+            reply = QMessageBox.question(self, "确认清空", 
+                                       "确定要清空所有日志记录吗？此操作不可撤销。",
+                                       QMessageBox.Yes | QMessageBox.No,
+                                       QMessageBox.No)
+            
+            if reply == QMessageBox.Yes:
+                # 清空日志文件
+                with open(LOG_FILE, 'w', encoding='utf-8') as f:
+                    f.write('')
+                log_text.setPlainText("日志已清空。")
+                logging.info("用户手动清空了日志文件")
+                QMessageBox.information(self, "成功", "日志文件已清空。")
+        except Exception as e:
+            error_msg = f"清空日志文件失败: {e}"
+            logging.error(error_msg, exc_info=True)
+            QMessageBox.critical(self, "错误", error_msg)
+    
+    def open_log_folder(self):
+        """打开日志文件夹"""
+        try:
+            import subprocess
+            import platform
+            
+            if platform.system() == "Windows":
+                subprocess.run(['explorer', LOG_DIR], check=True)
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.run(['open', LOG_DIR], check=True)
+            else:  # Linux
+                subprocess.run(['xdg-open', LOG_DIR], check=True)
+            
+            logging.info(f"打开日志文件夹: {LOG_DIR}")
+        except Exception as e:
+            error_msg = f"打开日志文件夹失败: {e}"
+            logging.error(error_msg, exc_info=True)
+            QMessageBox.critical(self, "错误", error_msg)
 
 # 程序入口
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = CommandManager()
-    sys.exit(app.exec_())
+    import os
+    import sys
+    
+    # 首先初始化日志系统
+    try:
+        setup_crash_logging()
+        logging.info("=== 应用程序启动 ===")
+        logging.info(f"Python版本: {sys.version}")
+        logging.info(f"工作目录: {os.getcwd()}")
+        logging.info(f"应用基础目录: {APP_BASE_DIR}")
+        
+        # 检查上次是否异常退出
+        check_previous_crash()
+        
+        # 创建崩溃标记文件
+        create_crash_marker("Application Starting")
+        
+        # 启动心跳检测
+        start_heartbeat()
+        
+    except Exception as e:
+        print(f"日志系统初始化失败: {e}")
+        # 即使日志系统失败也继续运行
+    
+    # 设置环境变量以提高Qt稳定性
+    os.environ['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+    os.environ['QT_SCALE_FACTOR'] = '1'
+    
+    app = None
+    window = None
+    
+    try:
+        logging.info("初始化QApplication...")
+        
+        # 创建QApplication时使用更保守的参数
+        app = QApplication(sys.argv)
+        app.setAttribute(Qt.AA_DisableWindowContextHelpButton, True)
+        app.setQuitOnLastWindowClosed(True)
+        
+        logging.info("创建CommandManager主窗口...")
+        try:
+            window = CommandManager()
+            logging.info("CommandManager创建成功")
+        except Exception as e:
+            logging.error(f"CommandManager创建失败: {e}", exc_info=True)
+            raise
+        
+        logging.info("显示主窗口...")
+        try:
+            window.show()
+            logging.info("主窗口显示成功")
+        except Exception as e:
+            logging.error(f"主窗口显示失败: {e}", exc_info=True)
+            raise
+        
+        logging.info("启动应用程序事件循环...")
+        exit_code = app.exec_()
+        logging.info(f"应用程序正常退出，退出码: {exit_code}")
+        sys.exit(exit_code)
+        
+    except KeyboardInterrupt:
+        logging.info("用户中断程序")
+        create_crash_marker("User Interrupt (Ctrl+C)")
+        print("\n用户中断程序")
+        sys.exit(0)
+    except Exception as e:
+        error_msg = f"程序异常: {e}"
+        logging.error(error_msg, exc_info=True)
+        create_crash_marker(f"Exception: {e}")
+        print(error_msg)
+        print(f"详细错误信息已保存到: {LOG_FILE}")
+        sys.exit(1)
+    finally:
+        # 停止心跳检测
+        try:
+            stop_heartbeat()
+        except Exception as e:
+            logging.error(f"停止心跳检测失败: {e}")
+        
+        if app:
+            try:
+                logging.info("清理QApplication资源...")
+                app.quit()
+            except Exception as e:
+                logging.error(f"清理应用程序资源时出错: {e}", exc_info=True)
+        
+        # 清理心跳文件
+        try:
+            if os.path.exists(HEARTBEAT_FILE):
+                os.remove(HEARTBEAT_FILE)
+        except Exception as e:
+            logging.error(f"清理心跳文件失败: {e}")
+        
+        logging.info("=== 应用程序结束 ===")

@@ -53,11 +53,23 @@
         "name": "截图",
         "command": "hdc shell snapshot_display -f /data/screenshot_{timestamp}.png; hdc shell file recv /data/screenshot_{timestamp}.png \"screenshot_{timestamp}.png\"",
         "type": "screenshot",
-        "icon": "file"
+        "icon": "screenshot"
+    },
+    {
+        "name": "设备录屏112",
+        "command": "{\"start\": \"hdc shell screenrecord /data/local/tmp/screen_{timestamp}.mp4\", \"stop\": \"hdc shell pkill -SIGINT screenrecord\", \"export\": \"hdc file recv /data/local/tmp/screen_{timestamp}.mp4 ./screen_{timestamp}.mp4\"}",
+        "type": "screen_record",
+        "icon": "screen_record"
     },
     {
         "name": "系统配置信息",
         "command": "systeminfo",
+        "type": "normal",
+        "icon": "normal"
+    },
+    {
+        "name": "文件夹快速打开",
+        "command": "explorer {local_path}",
         "type": "normal",
         "icon": "normal"
     }
