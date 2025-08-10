@@ -36,6 +36,7 @@ def get_app_base_dir() -> str:
 APP_BASE_DIR = get_app_base_dir()
 CONFIG_FILE = os.path.join(APP_BASE_DIR, 'config.json')
 UI_SETTINGS_FILE = os.path.join(APP_BASE_DIR, 'ui_settings.json')
+DELETED_COMMANDS_FILE = os.path.join(APP_BASE_DIR, 'deleted_commands.json')
 
 # 全局动画开关（为稳定优先，默认关闭）
 ANIMATIONS_ENABLED = False
@@ -651,6 +652,7 @@ class CommandManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.commands = []
+        self.deleted_commands = []  # 回收站命令列表
         self.command_thread = None
         self.current_theme = 'light'  # 默认主题
         self.init_themes()
@@ -658,6 +660,7 @@ class CommandManager(QMainWindow):
         self.load_ui_settings()
         self.init_ui()
         self.load_config()
+        self.load_deleted_commands()
         
     def init_themes(self):
         """初始化主题配置"""
@@ -1114,6 +1117,38 @@ class CommandManager(QMainWindow):
         manage_btn.clicked.connect(self.show_command_manager)
         manage_btn.setCursor(Qt.PointingHandCursor)
         left_layout.addWidget(manage_btn)
+        
+        # 回收站按钮
+        recycle_btn = QPushButton("🗑️ 查看回收站")
+        recycle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #2d3748, stop:1 #1a202c);
+                color: #ffd700;
+                border: 2px solid #ffd700;
+                padding: 8px 16px;
+                border-radius: 8px;
+                font-weight: 600;
+                font-size: 12px;
+                margin: 5px 0px;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #4a5568, stop:1 #2d3748);
+                border-color: #ffed4e;
+                color: #ffed4e;
+            }}
+            QPushButton:pressed {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ffd700, stop:1 #f6e05e);
+                border-color: #ffd700;
+                color: #000000;
+            }}
+        """)
+        recycle_btn.clicked.connect(self.show_recycle_bin)
+        recycle_btn.setCursor(Qt.PointingHandCursor)
+        left_layout.addWidget(recycle_btn)
+        
         hint = QLabel("右键命令可 快速编辑/删除/复制")
         hint.setStyleSheet("color: #cccccc; font-size: 12px; font-weight: 500;")
         left_layout.addWidget(hint)
@@ -1428,6 +1463,54 @@ class CommandManager(QMainWindow):
                 json.dump(self.commands, f, ensure_ascii=False, indent=4)
         except Exception as e:
             self.log_message(f"保存配置失败: {str(e)}", error=True)
+    
+    def load_deleted_commands(self):
+        """加载被删除的命令"""
+        try:
+            if os.path.exists(DELETED_COMMANDS_FILE):
+                with open(DELETED_COMMANDS_FILE, 'r', encoding='utf-8') as f:
+                    self.deleted_commands = json.load(f)
+            else:
+                self.deleted_commands = []
+        except Exception as e:
+            self.log_message(f"加载回收站失败: {str(e)}", error=True)
+            self.deleted_commands = []
+    
+    def save_deleted_commands(self):
+        """保存被删除的命令"""
+        try:
+            with open(DELETED_COMMANDS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.deleted_commands, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            self.log_message(f"保存回收站失败: {str(e)}", error=True)
+    
+    def move_to_recycle_bin(self, cmd):
+        """将命令移动到回收站"""
+        import datetime
+        # 添加删除时间戳
+        deleted_cmd = cmd.copy()
+        deleted_cmd['deleted_at'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        self.deleted_commands.append(deleted_cmd)
+        self.save_deleted_commands()
+    
+    def restore_from_recycle_bin(self, deleted_cmd):
+        """从回收站恢复命令"""
+        # 移除删除时间戳
+        restored_cmd = deleted_cmd.copy()
+        if 'deleted_at' in restored_cmd:
+            del restored_cmd['deleted_at']
+        
+        # 添加到命令列表
+        self.commands.append(restored_cmd)
+        self.save_config()
+        
+        # 从回收站移除
+        self.deleted_commands.remove(deleted_cmd)
+        self.save_deleted_commands()
+        
+        # 更新界面
+        self.update_command_buttons()
+        self.log_message(f"命令 '{restored_cmd['name']}' 已恢复", info=True)
     
     def update_command_buttons(self):
         # 清除现有按钮
@@ -2500,9 +2583,11 @@ class CommandManager(QMainWindow):
         before = len(self.commands)
         self.commands = [c for c in self.commands if not (c.get('name') == cmd.get('name') and c.get('command') == cmd.get('command'))]
         if len(self.commands) != before:
+            # 将命令移动到回收站
+            self.move_to_recycle_bin(cmd)
             self.save_config()
             self.update_command_buttons()
-            self.log_message("命令已删除", info=True)
+            self.log_message(f"命令 '{cmd['name']}' 已移至回收站", info=True)
     
     def update_terminal(self, text):
         # 更新终端输出
@@ -2613,6 +2698,13 @@ class CommandManager(QMainWindow):
         dialog.exec_()
         # 关闭返回后刷新（防止子对话框变更未刷）
         self.update_command_buttons()
+    
+    def show_recycle_bin(self):
+        """显示回收站对话框"""
+        dialog = RecycleBinDialog(self.deleted_commands, self)
+        dialog.exec_()
+        # 刷新回收站数据
+        self.load_deleted_commands()
 
 # 命令管理对话框
 class CommandManagerDialog(QDialog):
@@ -2694,8 +2786,21 @@ class CommandManagerDialog(QDialog):
         add_layout.addRow("命令名称:", self.name_input)
         
         # 命令内容
+        command_row = QWidget()
+        command_row_layout = QHBoxLayout(command_row)
+        command_row_layout.setContentsMargins(0, 0, 0, 0)
+        
         self.command_input = QLineEdit()
-        add_layout.addRow("命令内容:", self.command_input)
+        command_row_layout.addWidget(self.command_input)
+        
+        # 添加扩展按钮
+        expand_btn = QPushButton("📝")
+        expand_btn.setToolTip("扩大输入框")
+        expand_btn.setFixedSize(30, 30)
+        expand_btn.clicked.connect(self.expand_command_input)
+        command_row_layout.addWidget(expand_btn)
+        
+        add_layout.addRow("命令内容:", command_row)
         
         # 命令类型
         self.type_combo = QComboBox()
@@ -3152,6 +3257,83 @@ class CommandManagerDialog(QDialog):
         if tabs:
             tabs.setCurrentIndex(1)
     
+    def expand_command_input(self):
+        """扩展命令输入框"""
+        # 创建扩展输入对话框
+        dialog = QDialog(self)
+        dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        dialog.setWindowTitle("命令内容编辑器")
+        dialog.setMinimumSize(600, 400)
+        
+        # 应用主题样式
+        if hasattr(self, 'parent_window') and self.parent_window:
+            theme = self.parent_window.themes[self.parent_window.current_theme]
+            dialog.setStyleSheet(f"""
+                QDialog {{
+                     background: {theme['window_bg']};
+                     color: {theme['terminal_text']};
+                }}
+                QTextEdit {{
+                    background: {theme['terminal_bg']};
+                    color: {theme['terminal_text']};
+                    border: 2px solid {theme['accent_color']};
+                    border-radius: 8px;
+                    padding: 8px;
+                    font-family: 'Consolas', 'Monaco', monospace;
+                    font-size: 12px;
+                }}
+                QPushButton {{
+                    background: {theme['button_bg']};
+                    color: {theme['button_text']};
+                    border: 2px solid {theme['button_border']};
+                    border-radius: 6px;
+                    padding: 8px 16px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background: {theme['button_hover']};
+                }}
+            """)
+        
+        # 布局
+        layout = QVBoxLayout(dialog)
+        
+        # 提示标签
+        tip_label = QLabel("💡 提示: 在这里可以更方便地编辑长命令，支持多行输入")
+        tip_label.setStyleSheet("color: #888; margin-bottom: 10px;")
+        layout.addWidget(tip_label)
+        
+        # 文本编辑器
+        text_edit = QTextEdit()
+        text_edit.setPlainText(self.command_input.text())
+        text_edit.setTabStopWidth(40)  # 设置Tab宽度
+        layout.addWidget(text_edit)
+        
+        # 按钮布局
+        buttons_layout = QHBoxLayout()
+        
+        # 确定按钮
+        ok_btn = QPushButton("确定")
+        ok_btn.clicked.connect(dialog.accept)
+        buttons_layout.addWidget(ok_btn)
+        
+        # 取消按钮
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(dialog.reject)
+        buttons_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(buttons_layout)
+        
+        # 快捷键
+        QShortcut(QKeySequence("Ctrl+Return"), dialog, activated=dialog.accept)
+        QShortcut(QKeySequence("Escape"), dialog, activated=dialog.reject)
+        
+        # 显示对话框
+        if dialog.exec_() == QDialog.Accepted:
+            # 获取编辑后的文本并更新到原输入框
+            new_text = text_edit.toPlainText().strip()
+            self.command_input.setText(new_text)
+    
     def add_command_from_form(self):
         # 从表单添加命令
         name = self.name_input.text().strip()
@@ -3215,8 +3397,99 @@ class CommandManagerDialog(QDialog):
         layout.addRow("命令名称:", name_input)
         
         # 命令内容
+        command_row = QWidget()
+        command_row_layout = QHBoxLayout(command_row)
+        command_row_layout.setContentsMargins(0, 0, 0, 0)
+        
         command_input = QLineEdit(cmd['command'])
-        layout.addRow("命令内容:", command_input)
+        command_row_layout.addWidget(command_input)
+        
+        # 添加扩展按钮
+        expand_btn = QPushButton("📝")
+        expand_btn.setToolTip("扩大输入框")
+        expand_btn.setFixedSize(30, 30)
+        
+        # 为编辑对话框创建扩展功能
+        def expand_edit_input():
+            # 创建扩展输入对话框
+            edit_dialog = QDialog(dialog)
+            edit_dialog.setWindowFlags(edit_dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+            edit_dialog.setWindowTitle("命令内容编辑器")
+            edit_dialog.setMinimumSize(600, 400)
+            
+            # 应用主题样式
+            if self.parent_window:
+                theme = self.parent_window.themes[self.parent_window.current_theme]
+                edit_dialog.setStyleSheet(f"""
+                    QDialog {{
+                         background: {theme['window_bg']};
+                         color: {theme['terminal_text']};
+                    }}
+                    QTextEdit {{
+                        background: {theme['terminal_bg']};
+                        color: {theme['terminal_text']};
+                        border: 2px solid {theme['accent_color']};
+                        border-radius: 8px;
+                        padding: 8px;
+                        font-family: 'Consolas', 'Monaco', monospace;
+                        font-size: 12px;
+                    }}
+                    QPushButton {{
+                        background: {theme['button_bg']};
+                        color: {theme['button_text']};
+                        border: 2px solid {theme['button_border']};
+                        border-radius: 6px;
+                        padding: 8px 16px;
+                        font-weight: bold;
+                    }}
+                    QPushButton:hover {{
+                        background: {theme['button_hover']};
+                    }}
+                """)
+            
+            # 布局
+            edit_layout = QVBoxLayout(edit_dialog)
+            
+            # 提示标签
+            tip_label = QLabel("💡 提示: 在这里可以更方便地编辑长命令，支持多行输入")
+            tip_label.setStyleSheet("color: #888; margin-bottom: 10px;")
+            edit_layout.addWidget(tip_label)
+            
+            # 文本编辑器
+            text_edit = QTextEdit()
+            text_edit.setPlainText(command_input.text())
+            text_edit.setTabStopWidth(40)
+            edit_layout.addWidget(text_edit)
+            
+            # 按钮布局
+            buttons_layout = QHBoxLayout()
+            
+            # 确定按钮
+            ok_btn = QPushButton("确定")
+            ok_btn.clicked.connect(edit_dialog.accept)
+            buttons_layout.addWidget(ok_btn)
+            
+            # 取消按钮
+            cancel_btn = QPushButton("取消")
+            cancel_btn.clicked.connect(edit_dialog.reject)
+            buttons_layout.addWidget(cancel_btn)
+            
+            edit_layout.addLayout(buttons_layout)
+            
+            # 快捷键
+            QShortcut(QKeySequence("Ctrl+Return"), edit_dialog, activated=edit_dialog.accept)
+            QShortcut(QKeySequence("Escape"), edit_dialog, activated=edit_dialog.reject)
+            
+            # 显示对话框
+            if edit_dialog.exec_() == QDialog.Accepted:
+                # 获取编辑后的文本并更新到原输入框
+                new_text = text_edit.toPlainText().strip()
+                command_input.setText(new_text)
+        
+        expand_btn.clicked.connect(expand_edit_input)
+        command_row_layout.addWidget(expand_btn)
+        
+        layout.addRow("命令内容:", command_row)
         
         # 命令类型
         type_combo = QComboBox()
@@ -3294,13 +3567,18 @@ class CommandManagerDialog(QDialog):
         # 确认删除
         item = selected_items[0]
         cmd = item.data(Qt.UserRole)
-        reply = QMessageBox.question(self, "确认删除", f"确定要删除命令 '{cmd['name']}' 吗？",
+        reply = QMessageBox.question(self, "确认删除", f"确定要删除命令 '{cmd['name']}' 吗？\n\n命令将被移至回收站，可以稍后恢复。",
                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         
         if reply == QMessageBox.Yes:
             # 删除命令
             index = self.command_list.row(item)
+            deleted_cmd = self.commands[index]
             del self.commands[index]
+            
+            # 将命令移动到回收站
+            if self.parent_window:
+                self.parent_window.move_to_recycle_bin(deleted_cmd)
             
             # 更新列表
             self.update_command_list()
@@ -3310,6 +3588,8 @@ class CommandManagerDialog(QDialog):
                 self.parent_window.commands = self.commands.copy()
                 self.parent_window.save_config()
                 self.parent_window.update_command_buttons()
+                
+            QMessageBox.information(self, "删除成功", f"命令 '{deleted_cmd['name']}' 已移至回收站")
     
     def move_command_up(self):
         # 上移选中的命令
@@ -3477,6 +3757,224 @@ class CommandManagerDialog(QDialog):
         
         # 关闭对话框
         self.accept()
+
+# 回收站对话框
+class RecycleBinDialog(QDialog):
+    def __init__(self, deleted_commands, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.deleted_commands = deleted_commands.copy()
+        self.parent_window = parent
+        self.init_ui()
+    
+    def init_ui(self):
+        self.setWindowTitle("回收站")
+        self.setMinimumSize(700, 500)
+        
+        # 设置对话框图标
+        self.set_dialog_icon()
+        
+        # 应用主题样式
+        self.apply_theme()
+        
+        # 主布局
+        layout = QVBoxLayout(self)
+        
+        # 标题
+        title_label = QLabel("🗑️ 回收站 - 已删除的命令")
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold; margin-bottom: 10px;")
+        layout.addWidget(title_label)
+        
+        # 提示信息
+        if not self.deleted_commands:
+            info_label = QLabel("回收站为空")
+            info_label.setStyleSheet("color: #888; font-size: 14px; text-align: center; margin: 20px;")
+            info_label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(info_label)
+        else:
+            info_label = QLabel(f"共有 {len(self.deleted_commands)} 个已删除的命令")
+            info_label.setStyleSheet("color: #888; font-size: 12px; margin-bottom: 10px;")
+            layout.addWidget(info_label)
+        
+        # 命令列表
+        self.command_list = QListWidget()
+        self.command_list.setSelectionMode(QListWidget.SingleSelection)
+        self.update_command_list()
+        layout.addWidget(self.command_list)
+        
+        # 按钮布局
+        buttons_layout = QHBoxLayout()
+        
+        # 恢复按钮
+        restore_btn = QPushButton("🔄 恢复命令")
+        restore_btn.clicked.connect(self.restore_command)
+        buttons_layout.addWidget(restore_btn)
+        
+        # 永久删除按钮
+        permanent_delete_btn = QPushButton("❌ 永久删除")
+        permanent_delete_btn.clicked.connect(self.permanent_delete_command)
+        buttons_layout.addWidget(permanent_delete_btn)
+        
+        # 清空回收站按钮
+        clear_all_btn = QPushButton("🗑️ 清空回收站")
+        clear_all_btn.clicked.connect(self.clear_recycle_bin)
+        buttons_layout.addWidget(clear_all_btn)
+        
+        # 关闭按钮
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.accept)
+        buttons_layout.addWidget(close_btn)
+        
+        layout.addLayout(buttons_layout)
+        
+        # 快捷键
+        QShortcut(QKeySequence("Escape"), self, activated=self.accept)
+    
+    def set_dialog_icon(self):
+        """设置对话框图标"""
+        if self.parent_window:
+            self.setWindowIcon(self.parent_window.windowIcon())
+    
+    def apply_theme(self):
+        """应用主题样式"""
+        if hasattr(self, 'parent_window') and self.parent_window:
+            theme = self.parent_window.themes[self.parent_window.current_theme]
+            self.setStyleSheet(f"""
+                QDialog {{
+                    background: {theme['window_bg']};
+                    color: {theme['terminal_text']};
+                }}
+                QListWidget {{
+                    background: {theme['terminal_bg']};
+                    color: {theme['terminal_text']};
+                    border: 2px solid {theme['accent_color']};
+                    border-radius: 8px;
+                    padding: 5px;
+                }}
+                QListWidget::item {{
+                    padding: 8px;
+                    border-bottom: 1px solid {theme['accent_color']};
+                }}
+                QListWidget::item:selected {{
+                    background: {theme['accent_color']};
+                    color: {theme['window_bg']};
+                }}
+                QPushButton {{
+                    background: {theme['button_bg']};
+                    color: {theme['button_text']};
+                    border: 2px solid {theme['button_border']};
+                    border-radius: 6px;
+                    padding: 8px 16px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background: {theme['button_hover']};
+                }}
+                QLabel {{
+                    color: {theme['terminal_text']};
+                }}
+            """)
+    
+    def update_command_list(self):
+        """更新命令列表"""
+        self.command_list.clear()
+        for cmd in self.deleted_commands:
+            # 创建列表项
+            item_text = f"{cmd['name']} - {cmd.get('deleted_at', '未知时间')}"
+            if len(cmd.get('command', '')) > 50:
+                command_preview = cmd['command'][:50] + "..."
+            else:
+                command_preview = cmd.get('command', '')
+            
+            full_text = f"{item_text}\n命令: {command_preview}"
+            
+            item = QListWidgetItem(full_text)
+            item.setData(Qt.UserRole, cmd)
+            
+            # 设置图标
+            if self.parent_window:
+                icon_symbol = self.parent_window.get_command_icon_symbol(cmd.get('icon', 'terminal'))
+                item.setText(f"{icon_symbol} {full_text}")
+            
+            self.command_list.addItem(item)
+    
+    def restore_command(self):
+        """恢复选中的命令"""
+        selected_items = self.command_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "选择错误", "请先选择要恢复的命令")
+            return
+        
+        item = selected_items[0]
+        cmd = item.data(Qt.UserRole)
+        
+        reply = QMessageBox.question(self, "确认恢复", f"确定要恢复命令 '{cmd['name']}' 吗？",
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            # 恢复命令
+            if self.parent_window:
+                self.parent_window.restore_from_recycle_bin(cmd)
+            
+            # 从本地列表移除
+            self.deleted_commands.remove(cmd)
+            
+            # 更新列表
+            self.update_command_list()
+            
+            QMessageBox.information(self, "恢复成功", f"命令 '{cmd['name']}' 已恢复")
+    
+    def permanent_delete_command(self):
+        """永久删除选中的命令"""
+        selected_items = self.command_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "选择错误", "请先选择要永久删除的命令")
+            return
+        
+        item = selected_items[0]
+        cmd = item.data(Qt.UserRole)
+        
+        reply = QMessageBox.question(self, "确认永久删除", 
+                                    f"确定要永久删除命令 '{cmd['name']}' 吗？\n\n⚠️ 此操作不可撤销！",
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            # 从回收站永久删除
+            if self.parent_window:
+                self.parent_window.deleted_commands.remove(cmd)
+                self.parent_window.save_deleted_commands()
+            
+            # 从本地列表移除
+            self.deleted_commands.remove(cmd)
+            
+            # 更新列表
+            self.update_command_list()
+            
+            QMessageBox.information(self, "删除成功", f"命令 '{cmd['name']}' 已永久删除")
+    
+    def clear_recycle_bin(self):
+        """清空回收站"""
+        if not self.deleted_commands:
+            QMessageBox.information(self, "提示", "回收站已经是空的")
+            return
+        
+        reply = QMessageBox.question(self, "确认清空", 
+                                    f"确定要清空回收站吗？\n\n将永久删除 {len(self.deleted_commands)} 个命令\n\n⚠️ 此操作不可撤销！",
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            # 清空回收站
+            if self.parent_window:
+                self.parent_window.deleted_commands.clear()
+                self.parent_window.save_deleted_commands()
+            
+            # 清空本地列表
+            self.deleted_commands.clear()
+            
+            # 更新列表
+            self.update_command_list()
+            
+            QMessageBox.information(self, "清空成功", "回收站已清空")
 
 # 程序入口
 if __name__ == "__main__":

@@ -17,12 +17,8 @@
     {
         "name": "上传文件",
         "command": "hdc file send {local_path} {remote_path}",
-        "category": "file",
         "type": "upload",
-        "icon": "上传文件",
-        "tags": [
-            "frequent"
-        ]
+        "icon": "upload"
     },
     {
         "name": "下载文件",
@@ -58,20 +54,5 @@
         "command": "hdc shell snapshot_display -f /data/screenshot_{timestamp}.png; hdc shell file recv /data/screenshot_{timestamp}.png \"screenshot_{timestamp}.png\"",
         "type": "screenshot",
         "icon": "file"
-    },
-    {
-        "name": "查看任务栈",
-        "command": "hdc shell aa dump -l",
-        "category": "device",
-        "icon": "chart",
-        "tags": [
-            "debug"
-        ]
-    },
-    {
-        "name": "系统信息查看",
-        "command": "hdc shell getprop",
-        "type": "normal",
-        "icon": "system"
     }
 ]
