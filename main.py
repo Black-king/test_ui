@@ -3072,6 +3072,17 @@ class CommandManagerDialog(QDialog):
                     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                         stop:0 #0099cc, stop:1 #006699);
                 }}
+                QTextEdit {{
+                    background-color: {theme['terminal_bg']};
+                    color: {theme['terminal_text']};
+                    border: 2px solid {theme['accent_color']};
+                    border-radius: 6px;
+                    padding: 8px;
+                    font-family: 'Consolas', 'Monaco', monospace;
+                    font-size: 12px;
+                    selection-background-color: {theme['accent_color']};
+                    selection-color: #000000;
+                }}
             """)
     
     def set_dialog_icon(self):
@@ -3355,9 +3366,11 @@ class CommandManagerDialog(QDialog):
             for category in self.templates_data:
                 self.category_list.addItem(category['category'])
             
-            # 默认选中第一个分类
+            # 默认选中第一个分类并触发事件
             if self.category_list.count() > 0:
                 self.category_list.setCurrentRow(0)
+                # 手动触发分类选择事件，确保右侧内容正确显示
+                self.on_category_selected(0)
         except Exception as e:
             self.category_list.addItem(f"加载模板失败: {str(e)}")
     
@@ -3380,9 +3393,11 @@ class CommandManagerDialog(QDialog):
             item.setData(Qt.UserRole, template)
             self.templates_list.addItem(item)
         
-        # 默认选中第一个模板
+        # 默认选中第一个模板并触发事件
         if self.templates_list.count() > 0:
             self.templates_list.setCurrentRow(0)
+            # 手动触发模板选择事件，确保详情区域正确显示
+            self.on_template_selected(0)
     
     def on_template_selected(self, index):
         """当模板被选中时更新详情"""
