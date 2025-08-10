@@ -1114,7 +1114,7 @@ class CommandManager(QMainWindow):
         manage_btn.clicked.connect(self.show_command_manager)
         manage_btn.setCursor(Qt.PointingHandCursor)
         left_layout.addWidget(manage_btn)
-        hint = QLabel("右键命令可 快速运行/编辑/删除/复制")
+        hint = QLabel("右键命令可 快速编辑/删除/复制")
         hint.setStyleSheet("color: #cccccc; font-size: 12px; font-weight: 500;")
         left_layout.addWidget(hint)
         
@@ -2059,7 +2059,7 @@ class CommandManager(QMainWindow):
             self.terminal.append(f"<span style='color:{theme['terminal_text']}; font-weight:bold; font-size:18px;'>⚡ CYBER TERMINAL INITIALIZED v2.0</span>")
             self.terminal.append(f"<span style='color:{theme['accent_color']}; font-size:18px;'>" + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S') + " - 系统准备就绪，请选择要执行的命令...</span>")
         # 提示搜索与快捷键
-        self.terminal.append(f"<span style='color:{theme['terminal_text']}; font-size:14px;'>提示：Ctrl+F 搜索命令，右键命令可进行更多操作。</span>")
+        self.terminal.append(f"<span style='color:{theme['terminal_text']}; font-size:14px;'>提示：Ctrl+F 搜索命令，右键命令可编辑/删除/复制。</span>")
     
     def update_terminal_style(self):
         """更新终端样式"""
@@ -2163,22 +2163,20 @@ class CommandManager(QMainWindow):
             # 连接点击事件
             btn.clicked.connect(lambda checked, cmd=cmd: self.execute_command(cmd))
 
-            # 右键菜单：运行/编辑/删除/复制
+            # 右键菜单：编辑/删除/复制
             btn.setContextMenuPolicy(Qt.CustomContextMenu)
             def show_ctx_menu(pos, button=btn, command=cmd):
                 menu = QMenu(button)
                 # 设置菜单样式以保证可读性
                 theme = self.themes[self.current_theme]
                 menu.setStyleSheet(self.get_menu_stylesheet(theme))
-                run_act = QAction("运行", menu)
                 edit_act = QAction("编辑", menu)
                 del_act = QAction("删除", menu)
                 copy_act = QAction("复制命令", menu)
-                run_act.triggered.connect(lambda: self.execute_command(command))
                 edit_act.triggered.connect(lambda: self.open_edit_dialog(command))
                 del_act.triggered.connect(lambda: self.delete_command_from_ui(command))
                 copy_act.triggered.connect(lambda: self.copy_command_text(command))
-                for a in (run_act, edit_act, del_act, copy_act):
+                for a in (edit_act, del_act, copy_act):
                     menu.addAction(a)
                 menu.exec_(button.mapToGlobal(pos))
             btn.customContextMenuRequested.connect(show_ctx_menu)
@@ -2871,6 +2869,13 @@ class CommandManagerDialog(QDialog):
                     background-color: #007bff;
                     color: #ffffff;
                     border-color: #007bff;
+                    font-weight: 900;
+                }}
+                QListWidget::item:selected:hover {{
+                    background-color: #0056b3;
+                    color: #ffffff;
+                    border-color: #0056b3;
+                    font-weight: 900;
                 }}
                 QListWidget::item:hover {{
                     background-color: rgba(0, 123, 255, 0.1);
@@ -3003,13 +3008,16 @@ class CommandManagerDialog(QDialog):
                     margin: 2px;
                 }}
                 QListWidget::item:selected {{
-                    background-color: {theme['accent_color']};
-                    color: #000000;
-                    border-color: #66ffff;
+                    background-color: {'#007bff' if theme['accent_color'] == '#000000' else theme['accent_color']};
+                    color: {'#ffffff' if theme['accent_color'] == '#000000' else '#000000'};
+                    border-color: {'#007bff' if theme['accent_color'] == '#000000' else '#66ffff'};
+                    font-weight: 900;
                 }}
-                QListWidget::item:hover {{
-                    background-color: #1a4a5a;
-                    border-color: {theme['accent_color']};
+                QListWidget::item:selected:hover {{
+                    background-color: {'#0056b3' if theme['accent_color'] == '#000000' else theme['accent_color']};
+                    color: {'#ffffff' if theme['accent_color'] == '#000000' else '#ffffff'};
+                    border-color: {'#0056b3' if theme['accent_color'] == '#000000' else '#66ffff'};
+                    font-weight: 900;
                 }}
                 QLabel {{
                     color: {theme['accent_color']};
