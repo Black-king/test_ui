@@ -89,7 +89,7 @@ class ParticleEffect(QWidget):
         self.effect_type = 'floating_orbs'  # 可选: floating_orbs, wave_ripples, geometric_dance
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_particles)
-        self.timer.start(50)  # 50ms更新一次
+        self.timer.start(100)  # 100ms更新一次，平衡视觉效果和性能
         
         # 设置透明背景
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
@@ -600,8 +600,15 @@ class CommandThread(QThread):
             self.process.setProcessChannelMode(QProcess.MergedChannels)
             self.process.readyReadStandardOutput.connect(self.handle_output)
             
-            # 启动进程 - 使用cmd执行hdc命令
-            self.process.start("cmd", ["/c", self.command])
+            # 设置环境变量以确保正确的编码
+            env = self.process.processEnvironment()
+            env.insert("PYTHONIOENCODING", "utf-8")
+            env.insert("CHCP", "65001")  # UTF-8代码页
+            self.process.setProcessEnvironment(env)
+            
+            # 启动进程 - 使用cmd执行命令，先设置代码页为UTF-8
+            full_command = f"chcp 65001 >nul 2>&1 && {self.command}"
+            self.process.start("cmd", ["/c", full_command])
             
             # 等待进程完成
             if self.process.waitForFinished(-1):
@@ -619,11 +626,19 @@ class CommandThread(QThread):
     
     def handle_output(self):
         try:
-            # 尝试使用GBK解码，适用于中文Windows系统
-            data = self.process.readAllStandardOutput().data().decode('gbk', errors='replace')
-        except UnicodeDecodeError:
-            # 如果GBK解码失败，回退到UTF-8
-            data = self.process.readAllStandardOutput().data().decode('utf-8', errors='replace')
+            raw_data = self.process.readAllStandardOutput().data()
+            # 尝试多种编码方式
+            for encoding in ['utf-8', 'gbk', 'cp936', 'gb2312']:
+                try:
+                    data = raw_data.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                # 如果所有编码都失败，使用utf-8并忽略错误
+                data = raw_data.decode('utf-8', errors='ignore')
+        except Exception as e:
+            data = f"编码错误: {str(e)}\n"
             
         # 对输出进行颜色处理，只对特定类型的消息添加颜色标签
         if 'error' in data.lower() or 'failed' in data.lower() or 'exception' in data.lower():
@@ -748,6 +763,9 @@ class CommandManager(QMainWindow):
         
         # 设置窗口居中
         self.center_window()
+        
+        # 设置毛玻璃效果
+        self.setup_glass_effect()
         
         # 设置赛博朋克风格样式
         self.setStyleSheet("""
@@ -1394,6 +1412,53 @@ class CommandManager(QMainWindow):
     def focus_search(self):
         if hasattr(self, 'search_input'):
             self.search_input.setFocus()
+    
+    def setup_glass_effect(self):
+        """设置毛玻璃效果"""
+        try:
+            # 设置窗口透明度
+            self.setWindowOpacity(0.95)
+            
+            # 设置半透明背景属性
+            self.setAttribute(Qt.WA_TranslucentBackground)
+            
+            # Windows平台特定的毛玻璃效果
+            if sys.platform == 'win32':
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+                    
+                    # 获取窗口句柄
+                    hwnd = int(self.winId())
+                    
+                    # 启用亚克力模糊效果 (Windows 10/11)
+                    DWM_BB_ENABLE = 0x00000001
+                    DWM_BB_BLURREGION = 0x00000002
+                    
+                    class DWM_BLURBEHIND(ctypes.Structure):
+                        _fields_ = [
+                            ('dwFlags', wintypes.DWORD),
+                            ('fEnable', wintypes.BOOL),
+                            ('hRgnBlur', wintypes.HANDLE),
+                            ('fTransitionOnMaximized', wintypes.BOOL)
+                        ]
+                    
+                    bb = DWM_BLURBEHIND()
+                    bb.dwFlags = DWM_BB_ENABLE
+                    bb.fEnable = True
+                    bb.hRgnBlur = None
+                    bb.fTransitionOnMaximized = False
+                    
+                    # 调用DWM API
+                    ctypes.windll.dwmapi.DwmEnableBlurBehindWindow(hwnd, ctypes.byref(bb))
+                    
+                except Exception:
+                    # 如果Windows API调用失败，忽略错误
+                    pass
+                    
+        except Exception:
+            # 如果设置毛玻璃效果失败，忽略错误
+            pass
 
     def filter_commands(self, text):
         keyword = (text or '').strip().lower()
@@ -2111,7 +2176,7 @@ class CommandManager(QMainWindow):
                 apply_theme_effect(self.left_particle_effect, self.current_theme)
                 # 显示并启动
                 self.left_particle_effect.show()
-                self.left_particle_effect.timer.start(50)
+                self.left_particle_effect.timer.start(200)
             else:
                 self.left_particle_effect.hide()
                 self.left_particle_effect.timer.stop()
@@ -2124,7 +2189,7 @@ class CommandManager(QMainWindow):
                 apply_theme_effect(self.right_particle_effect, self.current_theme)
                 # 显示并启动
                 self.right_particle_effect.show()
-                self.right_particle_effect.timer.start(50)
+                self.right_particle_effect.timer.start(200)
             else:
                 self.right_particle_effect.hide()
                 self.right_particle_effect.timer.stop()
