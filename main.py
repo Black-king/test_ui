@@ -20,13 +20,24 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QPushButton, QVBoxLayout
                              QLineEdit, QComboBox, QFormLayout, QMessageBox, QProgressBar,
                              QScrollArea, QFrame, QSplitter, QTabWidget, QToolButton, QMenu,
                              QAction, QListWidget, QListWidgetItem, QInputDialog, QGraphicsOpacityEffect,
-                             QDesktopWidget, QShortcut, QSizePolicy, QToolTip)
+                             QDesktopWidget, QShortcut, QSizePolicy, QToolTip, QSlider)
 from PyQt5.QtCore import (Qt, QThread, pyqtSignal, QSize, QTimer, QProcess, QPropertyAnimation, 
                           QEasingCurve, QPoint, QRect, QEvent, QObject, QRectF, QT_VERSION_STR)
 from PyQt5.QtGui import (QIcon, QFont, QTextCursor, QColor, QPalette, QLinearGradient, QBrush, 
                          QPainter, QPixmap, QFontDatabase, QPen, QRadialGradient, QKeySequence, QPainterPath)
 import random
 import math
+import requests
+import io
+import re
+
+# 尝试导入pygame用于音频播放
+try:
+    import pygame
+    PYGAME_AVAILABLE = True
+except ImportError:
+    PYGAME_AVAILABLE = False
+    print("警告: pygame未安装，音乐播放功能将受限。请运行 'pip install pygame' 安装。")
 
 def get_app_base_dir() -> str:
     """返回运行时可写的基础目录。
@@ -766,6 +777,16 @@ class MusicPlayerDialog(QDialog):
         self.total_time = "00:00"
         self.volume = 50
         self.progress_value = 0
+        self.songs = []
+        self.current_index = 0
+        self.audio_initialized = False
+        
+        # 临时文件管理
+        self.current_temp_file = None
+        self.temp_files = []  # 存储所有临时文件路径
+        
+        # 初始化音频系统
+        self.init_audio()
         
         self.init_ui()
         self.apply_theme()
@@ -773,10 +794,71 @@ class MusicPlayerDialog(QDialog):
         # 模拟播放定时器
         self.play_timer = QTimer()
         self.play_timer.timeout.connect(self.update_progress)
+        
+        # 自动加载默认歌单
+        self.load_default_playlist()
+        
+        # 注册清理函数
+        import atexit
+        atexit.register(self.cleanup_temp_files)
+    
+    def init_audio(self):
+        """初始化音频系统"""
+        if PYGAME_AVAILABLE:
+            try:
+                # 先退出之前的音频系统（如果存在）
+                try:
+                    pygame.mixer.quit()
+                except:
+                    pass
+                
+                # 使用更保守的音频设置以避免电流声
+                # 尝试多种音频配置，找到最兼容的设置
+                audio_configs = [
+                    # 配置1：标准设置，较大缓冲区
+                    {'frequency': 22050, 'size': -16, 'channels': 2, 'buffer': 4096},
+                    # 配置2：更低采样率
+                    {'frequency': 22050, 'size': -16, 'channels': 1, 'buffer': 2048},
+                    # 配置3：最保守设置
+                    {'frequency': 11025, 'size': -16, 'channels': 1, 'buffer': 1024},
+                ]
+                
+                audio_initialized = False
+                for i, config in enumerate(audio_configs):
+                    try:
+                        pygame.mixer.pre_init(**config)
+                        pygame.mixer.init()
+                        
+                        # 测试音频系统是否正常工作
+                        pygame.mixer.set_num_channels(4)
+                        
+                        audio_initialized = True
+                        if self.parent_window:
+                            freq_str = f"{config['frequency']/1000:.1f}kHz"
+                            ch_str = "立体声" if config['channels'] == 2 else "单声道"
+                            self.parent_window.log_message(f"🎵 音频系统初始化成功（配置{i+1}: {freq_str}/{ch_str}）", success=True)
+                        break
+                    except Exception as e:
+                        if self.parent_window:
+                            self.parent_window.log_message(f"配置{i+1}失败: {e}")
+                        continue
+                
+                if not audio_initialized:
+                    raise Exception("所有音频配置都失败")
+                
+                self.audio_initialized = True
+            except Exception as e:
+                self.audio_initialized = False
+                if self.parent_window:
+                    self.parent_window.log_message(f"❌ 音频系统初始化失败: {e}", error=True)
+        else:
+            self.audio_initialized = False
+            if self.parent_window:
+                self.parent_window.log_message("⚠️ pygame未安装，音频功能不可用", info=True)
     
     def init_ui(self):
         self.setWindowTitle("🎵 Cyber Music Player")
-        self.setFixedSize(400, 500)
+        self.setFixedSize(480, 700)  # 调整窗口尺寸以适应新布局
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         
         # 设置窗口图标
@@ -787,86 +869,162 @@ class MusicPlayerDialog(QDialog):
         
         # 主布局
         layout = QVBoxLayout(self)
-        layout.setSpacing(20)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(8)
+        layout.setContentsMargins(15, 15, 15, 15)
         
-        # 标题
-        title = QLabel("🎵 CYBER MUSIC PLAYER")
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("""
-            font-size: 20px;
-            font-weight: bold;
-            color: #00ffff;
-            margin-bottom: 10px;
-            padding: 10px;
-            border: 2px solid #00ffff;
-            border-radius: 10px;
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                stop:0 #1a1a2e, stop:1 #16213e);
-        """)
-        layout.addWidget(title)
+        # 1. 输入控件布局 - 放在最顶部
+        input_layout = QHBoxLayout()
+        input_layout.setSpacing(8)
         
-        # 专辑封面区域
-        cover_frame = QFrame()
-        cover_frame.setFixedSize(200, 200)
-        cover_frame.setStyleSheet("""
-            QFrame {
-                border: 3px solid #00ffff;
-                border-radius: 15px;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #0a0a0a, stop:0.5 #1a1a2e, stop:1 #16213e);
+        self.playlist_input = QLineEdit()
+        self.playlist_input.setPlaceholderText("输入网易云歌单链接")
+        self.playlist_input.setStyleSheet("""
+            QLineEdit {
+                background: #0e1b2a;
+                color: #00ffff;
+                border: 2px solid #00ffff;
+                padding: 10px;
+                border-radius: 8px;
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                border-color: #33ffff;
+                background: #1a2332;
             }
         """)
+        self.playlist_input.setMinimumHeight(40)
         
-        cover_layout = QVBoxLayout(cover_frame)
-        cover_icon = QLabel("🎼")
-        cover_icon.setAlignment(Qt.AlignCenter)
-        cover_icon.setStyleSheet("font-size: 80px; color: #00ffff;")
-        cover_layout.addWidget(cover_icon)
+        load_btn = QPushButton("加载歌单")
+        load_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #00ffff, stop:1 #ff6b6b);
+                color: #000000;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 8px;
+                font-weight: bold;
+                font-size: 13px;
+                min-width: 80px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #33ffff, stop:1 #ff9999);
+            }
+            QPushButton:pressed {
+                background: #ff6b6b;
+            }
+        """)
+        load_btn.setMinimumHeight(40)
+        load_btn.clicked.connect(self.load_playlist)
         
-        # 居中显示专辑封面
-        cover_container = QHBoxLayout()
-        cover_container.addStretch()
-        cover_container.addWidget(cover_frame)
-        cover_container.addStretch()
-        layout.addLayout(cover_container)
+        input_layout.addWidget(self.playlist_input, 3)
+        input_layout.addWidget(load_btn, 1)
+        layout.addLayout(input_layout)
         
-        # 歌曲信息
+        # 2. 歌单列表 - 主要显示区域
+        self.song_list = QListWidget()
+        self.song_list.setStyleSheet("""
+            QListWidget {
+                background: #0e1b2a;
+                color: #00ffff;
+                border: 2px solid #00ffff;
+                border-radius: 8px;
+                font-size: 13px;
+            }
+            QListWidget::item {
+                padding: 12px 8px;
+                border-bottom: 1px solid #1a2332;
+                min-height: 25px;
+            }
+            QListWidget::item:selected {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #2a4a5a, stop:1 #3a5a6a);
+                color: #ffffff;
+                border-left: 4px solid #00ffff;
+            }
+            QListWidget::item:hover {
+                background: #1a3a4a;
+                color: #33ffff;
+            }
+        """)
+        self.song_list.setMinimumHeight(280)
+        self.song_list.itemClicked.connect(self.play_selected_song)
+        layout.addWidget(self.song_list)
+        
+        # 3. 当前播放歌曲信息
         self.song_label = QLabel(self.current_song)
         self.song_label.setAlignment(Qt.AlignCenter)
         self.song_label.setStyleSheet("""
-            font-size: 16px;
-            font-weight: bold;
-            color: #ffffff;
-            margin: 10px 0;
+            QLabel {
+                font-size: 15px;
+                font-weight: bold;
+                color: #ffffff;
+                text-shadow: 0 0 8px #00ffff;
+                padding: 12px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(14, 27, 42, 0.9), stop:1 rgba(26, 35, 50, 0.9));
+                border: 2px solid #00ffff;
+                border-radius: 8px;
+                min-height: 20px;
+            }
         """)
         layout.addWidget(self.song_label)
         
-        # 进度条
+        # 4. 进度条和时间显示
         progress_container = QVBoxLayout()
-        self.progress_bar = QProgressBar()
+        progress_container.setSpacing(5)
+        
+        from PyQt5.QtWidgets import QSlider as SliderWidget
+        self.progress_bar = SliderWidget()
+        self.progress_bar.setOrientation(Qt.Horizontal)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(self.progress_value)
+        self.progress_bar.valueChanged.connect(self.seek_position)
         self.progress_bar.setStyleSheet("""
-            QProgressBar {
+            QSlider::groove:horizontal {
                 border: 2px solid #00ffff;
-                border-radius: 8px;
-                background-color: #1a1a2e;
-                height: 20px;
+                height: 8px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #0e1b2a, stop:1 #1a1a2e);
+                border-radius: 6px;
             }
-            QProgressBar::chunk {
+            QSlider::handle:horizontal {
+                background: qradial-gradient(cx:0.5, cy:0.5, radius: 0.8,
+                    fx:0.5, fy:0.5, stop:0 #00ffff, stop:1 #0099cc);
+                border: 2px solid #00ffff;
+                width: 18px;
+                margin: -7px 0;
+                border-radius: 11px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: qradial-gradient(cx:0.5, cy:0.5, radius: 0.8,
+                    fx:0.5, fy:0.5, stop:0 #33ffff, stop:1 #33ccff);
+                width: 20px;
+                margin: -8px 0;
+                border-radius: 12px;
+            }
+            QSlider::sub-page:horizontal {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                     stop:0 #00ffff, stop:1 #ff6b6b);
-                border-radius: 6px;
+                border-radius: 4px;
+            }
+            QSlider::add-page:horizontal {
+                background: #0e1b2a;
+                border-radius: 4px;
             }
         """)
         
         # 时间标签
         time_layout = QHBoxLayout()
+        time_layout.setContentsMargins(5, 0, 5, 0)
+        
         self.current_time_label = QLabel(self.current_time)
         self.total_time_label = QLabel(self.total_time)
-        self.current_time_label.setStyleSheet("color: #00ffff; font-size: 12px;")
-        self.total_time_label.setStyleSheet("color: #00ffff; font-size: 12px;")
+        
+        time_style = "color: #00ffff; font-size: 11px; font-weight: bold; text-shadow: 0 0 4px #00ffff;"
+        self.current_time_label.setStyleSheet(time_style)
+        self.total_time_label.setStyleSheet(time_style)
         
         time_layout.addWidget(self.current_time_label)
         time_layout.addStretch()
@@ -876,48 +1034,53 @@ class MusicPlayerDialog(QDialog):
         progress_container.addLayout(time_layout)
         layout.addLayout(progress_container)
         
-        # 控制按钮
+        # 5. 播放控制按钮
         controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(15)
+        controls_layout.setSpacing(20)
         
         # 上一首按钮
         prev_btn = QPushButton("⏮")
-        prev_btn.setFixedSize(50, 50)
+        prev_btn.setFixedSize(55, 55)
         prev_btn.clicked.connect(self.prev_song)
         
         # 播放/暂停按钮
         self.play_btn = QPushButton("▶")
-        self.play_btn.setFixedSize(60, 60)
+        self.play_btn.setFixedSize(70, 70)
         self.play_btn.clicked.connect(self.toggle_play)
         
         # 下一首按钮
         next_btn = QPushButton("⏭")
-        next_btn.setFixedSize(50, 50)
+        next_btn.setFixedSize(55, 55)
         next_btn.clicked.connect(self.next_song)
         
         # 设置按钮样式
         button_style = """
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #1a1a2e, stop:1 #16213e);
+                    stop:0 #0e1b2a, stop:1 #16213e);
                 color: #00ffff;
-                border: 2px solid #00ffff;
-                border-radius: 25px;
+                border: 3px solid #00ffff;
+                border-radius: 27px;
                 font-size: 20px;
                 font-weight: bold;
+                text-shadow: 0 0 8px #00ffff;
             }
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #00ffff, stop:1 #ff6b6b);
                 color: #000000;
+                border-color: #33ffff;
+                text-shadow: none;
             }
             QPushButton:pressed {
                 background: #ff6b6b;
+                color: #000000;
+                border-color: #ff9999;
             }
         """
         
         prev_btn.setStyleSheet(button_style)
-        self.play_btn.setStyleSheet(button_style + "border-radius: 30px;")
+        self.play_btn.setStyleSheet(button_style.replace("border-radius: 27px;", "border-radius: 35px;").replace("font-size: 20px;", "font-size: 24px;"))
         next_btn.setStyleSheet(button_style)
         
         controls_layout.addStretch()
@@ -928,50 +1091,77 @@ class MusicPlayerDialog(QDialog):
         
         layout.addLayout(controls_layout)
         
-        # 音量控制
+        # 6. 音量控制
         volume_layout = QHBoxLayout()
-        volume_label = QLabel("🔊")
-        volume_label.setStyleSheet("color: #00ffff; font-size: 16px;")
+        volume_layout.setSpacing(10)
         
-        self.volume_slider = QProgressBar()
+        volume_label = QLabel("🔊")
+        volume_label.setStyleSheet("color: #00ffff; font-size: 16px; text-shadow: 0 0 6px #00ffff;")
+        
+        from PyQt5.QtWidgets import QSlider
+        self.volume_slider = QSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(self.volume)
         self.volume_slider.setStyleSheet("""
-            QProgressBar {
+            QSlider::groove:horizontal {
                 border: 2px solid #00ffff;
-                border-radius: 8px;
-                background-color: #1a1a2e;
-                height: 15px;
-            }
-            QProgressBar::chunk {
+                height: 10px;
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #00ff00, stop:1 #ffff00);
-                border-radius: 6px;
+                    stop:0 #0e1b2a, stop:1 #1a1a2e);
+                border-radius: 7px;
+            }
+            QSlider::handle:horizontal {
+                background: qradial-gradient(cx:0.5, cy:0.5, radius: 0.8,
+                    fx:0.5, fy:0.5, stop:0 #00ffff, stop:1 #ff6b6b);
+                border: 2px solid #00ffff;
+                width: 16px;
+                margin: -5px 0;
+                border-radius: 10px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: qradial-gradient(cx:0.5, cy:0.5, radius: 0.8,
+                    fx:0.5, fy:0.5, stop:0 #ff9b9b, stop:1 #33ff66);
+                width: 18px;
+                margin: -6px 0;
+                border-radius: 11px;
+            }
+            QSlider::sub-page:horizontal {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #33ff66, stop:1 #ffff66);
+                border-radius: 5px;
             }
         """)
         
+        self.volume_slider.valueChanged.connect(self.change_volume)
+        
+        self.volume_label_value = QLabel(f"{self.volume}%")
+        self.volume_label_value.setStyleSheet("color: #00ffff; font-size: 12px; min-width: 40px; font-weight: bold; text-shadow: 0 0 4px #00ffff;")
+        
         volume_layout.addWidget(volume_label)
-        volume_layout.addWidget(self.volume_slider)
+        volume_layout.addWidget(self.volume_slider, 1)
+        volume_layout.addWidget(self.volume_label_value)
         layout.addLayout(volume_layout)
         
-        # 返回按钮
+        # 7. 返回按钮
         back_btn = QPushButton("🔙 返回主界面")
         back_btn.setStyleSheet("""
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #1e3a8a, stop:1 #1e40af);
-                color: #60a5fa;
-                border: 2px solid #60a5fa;
-                padding: 10px 20px;
-                border-radius: 8px;
+                    stop:0 #0e1b2a, stop:1 #16213e);
+                color: #60e5fa;
+                border: 2px solid #60e5fa;
+                padding: 12px 24px;
+                border-radius: 10px;
                 font-weight: bold;
                 font-size: 14px;
+                text-shadow: 0 0 6px #60e5fa;
             }
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #3b82f6, stop:1 #2563eb);
                 border-color: #93c5fd;
                 color: #ffffff;
+                text-shadow: none;
             }
             QPushButton:pressed {
                 background: #60a5fa;
@@ -981,15 +1171,126 @@ class MusicPlayerDialog(QDialog):
         back_btn.clicked.connect(self.close)
         layout.addWidget(back_btn)
     
+    def load_playlist(self):
+        link = self.playlist_input.text().strip()
+        if not link:
+            QMessageBox.warning(self, "警告", "请输入歌单链接")
+            return
+        try:
+            match = re.search(r'playlist\?id=(\d+)', link)
+            if match:
+                playlist_id = match.group(1)
+                url = f'https://163api.qijieya.cn/playlist/detail?id={playlist_id}'
+                
+                # 添加超时和错误处理
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()  # 检查HTTP状态码
+                
+                data = response.json()
+                if data.get('code') == 200:
+                    playlist_info = data.get('playlist', {})
+                    tracks = playlist_info.get('tracks', [])
+                    
+                    if not tracks:
+                        QMessageBox.warning(self, "警告", "歌单为空或无法获取歌曲列表")
+                        return
+                    
+                    self.songs = []
+                    for track in tracks:
+                        song_id = track['id']
+                        # 使用API获取真实的音频URL
+                        try:
+                            song_url_api = f'https://163api.qijieya.cn/song/url?id={song_id}'
+                            song_response = requests.get(song_url_api, timeout=5)
+                            song_data = song_response.json()
+                            
+                            if song_data.get('code') == 200 and song_data.get('data'):
+                                 song_url = song_data['data'][0].get('url')
+                                 if song_url:  # 只添加有有效URL的歌曲
+                                     if self.parent_window:
+                                         self.parent_window.log_message(f"获取到歌曲URL: {track['name']} - {song_url[:50]}...")
+                                     self.songs.append({
+                                         'name': track['name'],
+                                         'url': song_url,
+                                         'artist': track['ar'][0]['name'] if track.get('ar') else 'Unknown'
+                                     })
+                                 else:
+                                     if self.parent_window:
+                                         self.parent_window.log_message(f"歌曲 {track['name']} 没有有效的播放URL", error=True)
+                        except Exception as e:
+                            # 如果获取URL失败，跳过这首歌
+                            if self.parent_window:
+                                self.parent_window.log_message(f"跳过歌曲 {track['name']}: 无法获取播放链接", error=True)
+                            continue
+                    
+                    self.current_index = 0
+                    self.update_song_info()
+                    self.populate_song_list()
+                    if self.is_playing:
+                        self.play_new_song()
+                else:
+                    error_msg = data.get('message', '未知错误')
+                    QMessageBox.critical(self, "错误", f"获取歌单失败: {error_msg}")
+            else:
+                QMessageBox.critical(self, "错误", "无效的歌单链接\n请输入正确的网易云音乐歌单链接")
+        except requests.exceptions.Timeout:
+            QMessageBox.critical(self, "错误", "网络请求超时，请检查网络连接")
+        except requests.exceptions.ConnectionError:
+            QMessageBox.critical(self, "错误", "网络连接失败，请检查网络设置")
+        except requests.exceptions.RequestException as e:
+            QMessageBox.critical(self, "错误", f"网络请求错误: {e}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"加载歌单错误: {e}")
+
+    def update_song_info(self):
+        if self.songs and 0 <= self.current_index < len(self.songs):
+            song = self.songs[self.current_index]
+            self.current_song = song['name']
+            # 将歌曲名和歌手信息合并显示
+            display_text = f"{song['name']} - {song['artist']}"
+            self.song_label.setText(display_text)
+
+    def populate_song_list(self):
+        self.song_list.clear()
+        for song in self.songs:
+            self.song_list.addItem(f"{song['name']} - {song['artist']}")
+
+    def play_selected_song(self, item):
+        selected_text = item.text()
+        for idx, song in enumerate(self.songs):
+            if f"{song['name']} - {song['artist']}" == selected_text:
+                self.current_index = idx
+                self.update_song_info()
+                
+                # 停止当前播放并清理临时文件，确保播放新选择的歌曲
+                self.stop_playback()
+                
+                # 重置进度条
+                self.progress_value = 0
+                self.progress_bar.setValue(0)
+                
+                # 强制播放新选择的歌曲
+                self.is_playing = True
+                self.play_btn.setText("⏸")
+                self.play_timer.start(1000)
+                self.play_new_song()
+                break
+
     def apply_theme(self):
         """应用主题样式"""
         self.setStyleSheet("""
             QDialog {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #0a0a0a, stop:0.5 #1a1a2e, stop:1 #16213e);
+                    stop:0 #05080d, stop:0.5 #0e1b2a, stop:1 #121826);
                 color: #00ffff;
             }
         """)
+    
+    def load_default_playlist(self):
+        """自动加载默认歌单"""
+        default_url = "https://music.163.com/playlist?id=708924941&uct2=U2FsdGVkX19Ze6Sk+iJIQQY7GEPwJhDzasPftEcR4uw="
+        self.playlist_input.setText(default_url)
+        self.load_playlist()
     
     def toggle_play(self):
         """切换播放/暂停状态"""
@@ -997,48 +1298,415 @@ class MusicPlayerDialog(QDialog):
         if self.is_playing:
             self.play_btn.setText("⏸")
             self.play_timer.start(1000)  # 每秒更新一次
-            if self.parent_window:
-                self.parent_window.log_message("🎵 开始播放音乐", success=True)
+            
+            # 如果有歌曲列表，播放当前歌曲
+            if self.songs:
+                # 检查是否需要播放新歌曲（第一次播放或切换歌曲）
+                if not hasattr(self, 'current_temp_file') or not self.current_temp_file:
+                    self.play_new_song()
+                else:
+                    # 恢复播放已加载的音频
+                    if self.audio_initialized and PYGAME_AVAILABLE:
+                        try:
+                            pygame.mixer.music.unpause()
+                            pygame.mixer.music.set_volume(self.volume / 100.0)
+                            if self.parent_window:
+                                self.parent_window.log_message("▶️ 恢复播放")
+                        except Exception as e:
+                            if self.parent_window:
+                                self.parent_window.log_message(f"恢复播放失败: {e}", error=True)
+                            # 如果恢复失败，重新播放
+                            self.play_new_song()
+            else:
+                if self.parent_window:
+                    self.parent_window.log_message("⚠️ 没有可播放的歌曲", info=True)
         else:
             self.play_btn.setText("▶")
             self.play_timer.stop()
-            if self.parent_window:
-                self.parent_window.log_message("⏸ 音乐已暂停", info=True)
+            
+            # 暂停音频播放（不清理临时文件，以便恢复播放）
+            if self.audio_initialized and PYGAME_AVAILABLE:
+                try:
+                    pygame.mixer.music.pause()
+                    if self.parent_window:
+                        self.parent_window.log_message("⏸️ 暂停播放")
+                except Exception as e:
+                    if self.parent_window:
+                        self.parent_window.log_message(f"暂停播放失败: {e}", error=True)
     
     def prev_song(self):
         """上一首歌"""
-        songs = ["Cyber Dreams", "Neon Nights", "Digital Love", "Future Bass", "Synthwave"]
-        current_index = songs.index(self.current_song) if self.current_song in songs else 0
-        self.current_song = songs[(current_index - 1) % len(songs)]
-        self.song_label.setText(self.current_song)
-        self.progress_value = 0
-        self.progress_bar.setValue(self.progress_value)
+        if self.songs:
+            # 先停止当前播放并清理临时文件
+            self.stop_playback()
+            self.current_index = (self.current_index - 1) % len(self.songs)
+            self.update_song_info()
+            self.progress_value = 0
+            self.progress_bar.setValue(self.progress_value)
+            if self.is_playing:
+                self.play_new_song()
+        else:
+            songs = ["Cyber Dreams", "Neon Nights", "Digital Love", "Future Bass", "Synthwave"]
+            current_index = songs.index(self.current_song) if self.current_song in songs else 0
+            self.current_song = songs[(current_index - 1) % len(songs)]
+            self.song_label.setText(self.current_song)
+            self.progress_value = 0
+            self.progress_bar.setValue(self.progress_value)
+            if self.is_playing:
+                self.play_new_song()
         if self.parent_window:
-            self.parent_window.log_message(f"⏮ 切换到: {self.current_song}", info=True)
+            # 切换到上一首（静默）
+            pass
     
     def next_song(self):
         """下一首歌"""
-        songs = ["Cyber Dreams", "Neon Nights", "Digital Love", "Future Bass", "Synthwave"]
-        current_index = songs.index(self.current_song) if self.current_song in songs else 0
-        self.current_song = songs[(current_index + 1) % len(songs)]
-        self.song_label.setText(self.current_song)
-        self.progress_value = 0
-        self.progress_bar.setValue(self.progress_value)
+        if self.songs:
+            # 先停止当前播放并清理临时文件
+            self.stop_playback()
+            self.current_index = (self.current_index + 1) % len(self.songs)
+            self.update_song_info()
+            self.progress_value = 0
+            self.progress_bar.setValue(self.progress_value)
+            if self.is_playing:
+                self.play_new_song()
+        else:
+            songs = ["Cyber Dreams", "Neon Nights", "Digital Love", "Future Bass", "Synthwave"]
+            current_index = songs.index(self.current_song) if self.current_song in songs else 0
+            self.current_song = songs[(current_index + 1) % len(songs)]
+            self.song_label.setText(self.current_song)
+            self.progress_value = 0
+            self.progress_bar.setValue(self.progress_value)
+            if self.is_playing:
+                self.play_new_song()
         if self.parent_window:
-            self.parent_window.log_message(f"⏭ 切换到: {self.current_song}", info=True)
+            # 切换到下一首（静默）
+            pass
+    
+    def play_with_system_player(self, audio_url):
+        """使用系统播放器播放音频（备用方案）"""
+        try:
+            import webbrowser
+            import subprocess
+            import tempfile
+            import os
+            
+            if self.parent_window:
+                self.parent_window.log_message("🔄 使用系统播放器播放音频...", info=True)
+            
+            # 下载音频文件到临时目录
+            response = requests.get(audio_url, stream=True, timeout=10)
+            if response.status_code == 200:
+                temp_file = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
+                for chunk in response.iter_content(chunk_size=32768):
+                    if chunk:
+                        temp_file.write(chunk)
+                temp_file.close()
+                
+                # 使用Windows默认音频播放器
+                try:
+                    # 方法1：使用start命令
+                    subprocess.Popen(['start', '', temp_file.name], shell=True)
+                    if self.parent_window:
+                        self.parent_window.log_message("✅ 系统播放器启动成功", success=True)
+                    return True
+                except Exception as e1:
+                    try:
+                        # 方法2：使用os.startfile
+                        os.startfile(temp_file.name)
+                        if self.parent_window:
+                            self.parent_window.log_message("✅ 系统播放器启动成功", success=True)
+                        return True
+                    except Exception as e2:
+                        if self.parent_window:
+                            self.parent_window.log_message(f"❌ 系统播放器启动失败: {e1}, {e2}", error=True)
+                        return False
+            else:
+                if self.parent_window:
+                    self.parent_window.log_message(f"❌ 音频下载失败: HTTP {response.status_code}", error=True)
+                return False
+        except Exception as e:
+            if self.parent_window:
+                self.parent_window.log_message(f"❌ 系统播放器错误: {e}", error=True)
+            return False
+    
+    def play_new_song(self):
+        """播放新歌曲"""
+        if not self.songs:
+            if self.parent_window:
+                self.parent_window.log_message("没有可播放的歌曲", error=True)
+            return
+        
+        song = self.songs[self.current_index]
+        
+        # 如果pygame不可用或音频系统未初始化，使用系统播放器
+        if not self.audio_initialized or not PYGAME_AVAILABLE:
+            if self.parent_window:
+                self.parent_window.log_message("pygame不可用，尝试使用系统播放器", info=True)
+            return self.play_with_system_player(song['url'])
+        try:
+            # 先停止当前播放
+            self.stop_playback()
+            # 清理旧的临时文件
+            self.cleanup_temp_files()
+            if self.songs:
+                song = self.songs[self.current_index]
+                if self.parent_window:
+                    self.parent_window.log_message(f"正在播放: {song['name']} - {song['url'][:50]}...")
+                
+                # 使用流式下载和临时文件来改善播放体验
+                import tempfile
+                import os
+                
+                temp_file = None
+                try:
+                    response = requests.get(song['url'], stream=True, timeout=10)
+                    if response.status_code == 200:
+                        content_type = response.headers.get('Content-Type', '')
+                        if self.parent_window:
+                            self.parent_window.log_message(f"音频文件类型: {content_type}")
+                        
+                        # 根据内容类型确定文件扩展名
+                        if 'audio/mpeg' in content_type or 'audio/mp3' in content_type:
+                            suffix = '.mp3'
+                        elif 'audio/wav' in content_type:
+                            suffix = '.wav'
+                        elif 'audio/ogg' in content_type:
+                            suffix = '.ogg'
+                        else:
+                            suffix = '.mp3'  # 默认
+                        
+                        # 创建临时文件
+                        temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+                        
+                        # 流式下载到临时文件，使用较大的块大小以减少I/O操作
+                        chunk_size = 32768  # 32KB chunks
+                        total_size = 0
+                        for chunk in response.iter_content(chunk_size=chunk_size):
+                            if chunk:
+                                temp_file.write(chunk)
+                                total_size += len(chunk)
+                        
+                        temp_file.close()
+                        
+                        if self.parent_window:
+                            self.parent_window.log_message(f"音频文件下载完成，大小: {total_size/1024:.1f}KB")
+                        
+                        # 验证文件是否下载完整
+                        if total_size < 1024:  # 小于1KB可能是错误文件
+                            raise Exception(f"音频文件太小({total_size}字节)，可能下载失败")
+                        
+                        # 使用临时文件播放，添加错误处理
+                        pygame_success = False
+                        try:
+                            pygame.mixer.music.load(temp_file.name)
+                            pygame.mixer.music.play(loops=0)  # 只播放一次，不循环
+                            pygame.mixer.music.set_volume(self.volume / 100.0)
+                            pygame_success = True
+                        except pygame.error as e:
+                            if self.parent_window:
+                                self.parent_window.log_message(f"Pygame播放错误: {e}，尝试重新初始化音频系统", error=True)
+                            try:
+                                # 尝试重新初始化音频系统
+                                self.init_audio()
+                                pygame.mixer.music.load(temp_file.name)
+                                pygame.mixer.music.play(loops=0)  # 只播放一次，不循环
+                                pygame.mixer.music.set_volume(self.volume / 100.0)
+                                pygame_success = True
+                            except Exception as e2:
+                                if self.parent_window:
+                                    self.parent_window.log_message(f"Pygame重新初始化后仍然失败: {e2}，切换到系统播放器", error=True)
+                                # 清理临时文件
+                                try:
+                                    os.unlink(temp_file.name)
+                                except:
+                                    pass
+                                # 使用系统播放器作为备用方案
+                                return self.play_with_system_player(song['url'])
+                        
+                        if not pygame_success:
+                            if self.parent_window:
+                                self.parent_window.log_message("Pygame播放失败，切换到系统播放器", error=True)
+                            # 清理临时文件
+                            try:
+                                os.unlink(temp_file.name)
+                            except:
+                                pass
+                            # 使用系统播放器作为备用方案
+                            return self.play_with_system_player(song['url'])
+                        
+                        if self.parent_window:
+                            self.parent_window.log_message("音频播放已开始（流式加载）")
+                        
+                        # 保存临时文件路径以便后续清理
+                        self.current_temp_file = temp_file.name
+                        self.temp_files.append(temp_file.name)
+                        
+                    else:
+                        if self.parent_window:
+                            self.parent_window.log_message(f"无法加载歌曲，HTTP状态码: {response.status_code}", error=True)
+                        if temp_file:
+                            temp_file.close()
+                            try:
+                                os.unlink(temp_file.name)
+                            except:
+                                pass
+                                
+                except Exception as download_error:
+                    if self.parent_window:
+                        self.parent_window.log_message(f"下载音频文件时出错: {download_error}", error=True)
+                    if temp_file:
+                        temp_file.close()
+                        try:
+                            os.unlink(temp_file.name)
+                        except:
+                            pass
+            else:
+                song_frequencies = {
+                    "Cyber Dreams": 440,
+                    "Neon Nights": 523,
+                    "Digital Love": 587,
+                    "Future Bass": 659,
+                    "Synthwave": 698
+                }
+                frequency = song_frequencies.get(self.current_song, 440)
+                import numpy as np
+                import tempfile
+                import wave
+                sample_rate = 22050
+                duration = 0.8
+                t = np.linspace(0, duration, int(sample_rate * duration), False)
+                wave_data = (np.sin(frequency * 2 * np.pi * t) * 0.3 + 
+                             np.sin(frequency * 1.5 * 2 * np.pi * t) * 0.1)
+                wave_data = (wave_data * 32767).astype(np.int16)
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+                    temp_filename = temp_file.name
+                with wave.open(temp_filename, 'w') as wav_file:
+                    wav_file.setnchannels(1)
+                    wav_file.setsampwidth(2)
+                    wav_file.setframerate(sample_rate)
+                    wav_file.writeframes(wave_data.tobytes())
+                pygame.mixer.music.load(temp_filename)
+                pygame.mixer.music.play(loops=0)
+                pygame.mixer.music.set_volume(self.volume / 100.0)
+        except Exception as e:
+            if self.parent_window:
+                self.parent_window.log_message(f"播放错误: {e}", error=True)
+    
+    def cleanup_temp_files(self):
+        """清理临时文件"""
+        import os
+        cleaned_files = []
+        for temp_file in self.temp_files[:]:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+                    cleaned_files.append(temp_file)
+                    if self.parent_window:
+                        self.parent_window.log_message(f"已清理临时文件: {temp_file}")
+            except Exception as e:
+                # 文件可能正在使用中，跳过但不报错
+                if self.parent_window:
+                    self.parent_window.log_message(f"临时文件正在使用中，跳过清理: {temp_file}")
+        
+        # 从列表中移除已清理的文件
+        for cleaned_file in cleaned_files:
+            if cleaned_file in self.temp_files:
+                self.temp_files.remove(cleaned_file)
+    
+    def stop_playback(self):
+        """停止播放"""
+        if self.audio_initialized and PYGAME_AVAILABLE:
+            try:
+                pygame.mixer.music.stop()
+                # 停止后稍等一下，让pygame释放文件句柄
+                import time
+                time.sleep(0.1)
+            except Exception as e:
+                if self.parent_window:
+                    self.parent_window.log_message(f"停止播放时出错: {e}", error=True)
+        
+        # 不立即删除当前临时文件，标记为当前文件为None
+        self.current_temp_file = None
+    
+    def play_audio_effect(self):
+        """播放音频效果（已弃用，保留以兼容性）"""
+        # 此方法已不再使用，播放逻辑已移至toggle_play方法
+        pass
+    
+    def change_volume(self, value):
+        """音量变化处理"""
+        self.volume = value
+        self.volume_label_value.setText(f"{value}%")
+        
+        # 实时调整音频音量
+        if self.audio_initialized and PYGAME_AVAILABLE:
+            try:
+                pygame.mixer.music.set_volume(value / 100.0)
+            except Exception:
+                pass
+        
+        # 音量调整（移除日志输出）
+        pass
+    
+    def seek_position(self, value):
+        """拖动进度条跳转播放位置"""
+        self.progress_value = value
+        
+        # 更新时间显示
+        total_seconds = 180  # 假设总时长3分钟
+        current_seconds = int((value / 100.0) * total_seconds)
+        
+        minutes = current_seconds // 60
+        seconds = current_seconds % 60
+        self.current_time = f"{minutes:02d}:{seconds:02d}"
+        self.current_time_label.setText(self.current_time)
+        
+        # 拖动进度条时不重新播放，只更新显示
+        # 注释掉重新播放逻辑，避免重复播放问题
+        # if self.is_playing and self.audio_initialized and PYGAME_AVAILABLE:
+        #     try:
+        #         self.play_new_song()
+        #     except Exception as e:
+        #         pass
     
     def update_progress(self):
         """更新播放进度"""
         if self.is_playing:
-            self.progress_value += 2  # 每秒增加2%
+            # 检查是否有真实的音频播放
+            if self.audio_initialized and PYGAME_AVAILABLE:
+                try:
+                    # 尝试获取真实的播放位置
+                    if pygame.mixer.music.get_busy():
+                        # 如果音频正在播放，使用模拟进度（因为pygame.mixer.music没有直接的位置获取方法）
+                        self.progress_value += 100.0 / 180.0  # 每秒增加约0.56%（180秒总时长）
+                    else:
+                        # 音频已停止，停止播放而不是自动切换下一首
+                        self.is_playing = False
+                        self.play_btn.setText("▶")
+                        self.play_timer.stop()
+                        self.progress_value = 0
+                        self.progress_bar.setValue(0)
+                        return
+                except Exception as e:
+                    # pygame调用出错，使用模拟进度
+                    self.progress_value += 100.0 / 180.0
+            else:
+                # 没有音频系统，使用模拟进度
+                self.progress_value += 100.0 / 180.0
+            
+            # 确保进度不超过100%，播放完毕后停止
             if self.progress_value >= 100:
+                self.is_playing = False
+                self.play_btn.setText("▶")
+                self.play_timer.stop()
                 self.progress_value = 0
-                self.next_song()  # 自动播放下一首
+                self.progress_bar.setValue(0)
+                return
             
-            self.progress_bar.setValue(self.progress_value)
+            self.progress_bar.setValue(int(self.progress_value))
             
-            # 更新时间显示
-            current_seconds = int(self.progress_value * 3.6)  # 假设总时长3分钟
+            # 更新时间显示（基于180秒总时长）
+            current_seconds = int(self.progress_value * 1.8)  # 180秒 * (progress/100)
             total_seconds = 180
             
             self.current_time = f"{current_seconds // 60:02d}:{current_seconds % 60:02d}"
@@ -3951,7 +4619,6 @@ class CommandManager(QMainWindow):
     def ready_clicked(self, event):
         """READY标签点击事件处理"""
         self.ready_click_count += 1
-        self.log_message(f"🎵 READY点击次数: {self.ready_click_count}/5", info=True)
         
         if self.ready_click_count >= 5:
             # 点击5次后打开音乐播放器
@@ -3973,13 +4640,17 @@ class CommandManager(QMainWindow):
     
     def show_music_player(self):
         """显示音乐播放器"""
-        if self.music_player_dialog is None:
-            self.music_player_dialog = MusicPlayerDialog(self)
-        
-        self.log_message("🎵 音乐播放器已启动！", success=True)
-        self.music_player_dialog.show()
-        self.music_player_dialog.raise_()
-        self.music_player_dialog.activateWindow()
+        # 防止重复打开对话框
+        if hasattr(self, '_music_player_dialog_open') and self._music_player_dialog_open:
+            return
+            
+        try:
+            self._music_player_dialog_open = True
+            self.log_message("🎵 音乐播放器已启动！", success=True)
+            dialog = MusicPlayerDialog(self)
+            dialog.exec_()
+        finally:
+            self._music_player_dialog_open = False
     
     def scale_down(self):
         """缩小界面"""
