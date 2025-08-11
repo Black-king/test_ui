@@ -2474,11 +2474,12 @@ class CommandManager(QMainWindow):
             }}
         """)
         
-        # 更新标题栏样式
+        # 更新标题栏样式 - 设置为透明背景以去除按钮背后的红色框
         title_widget = self.theme_button.parent()
         title_widget.setStyleSheet(f"""
             QWidget {{
-                background: {theme['title_bg']};
+                background: transparent;
+                border: none;
                 border-radius: 12px;
                 margin: 8px;
                 min-height: 50px;
