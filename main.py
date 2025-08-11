@@ -766,6 +766,216 @@ class ParticleEffect(QWidget):
             self.particles.clear()
             self.init_particles()
 
+# 歌单加载线程
+class PlaylistLoaderThread(QThread):
+    playlist_loaded = pyqtSignal(list)  # 发送加载的歌曲列表
+    error_occurred = pyqtSignal(str)    # 发送错误信息
+    progress_updated = pyqtSignal(int, int)  # 发送进度信息 (当前, 总数)
+    
+    def __init__(self, playlist_url, parent=None):
+        super().__init__(parent)
+        self.playlist_url = playlist_url
+        self.parent_dialog = parent
+    
+    def run(self):
+        """在后台线程中加载歌单"""
+        try:
+            if not self.playlist_url:
+                self.error_occurred.emit("请输入歌单链接")
+                return
+                
+            match = re.search(r'playlist\?id=(\d+)', self.playlist_url)
+            if not match:
+                self.error_occurred.emit("无效的歌单链接格式")
+                return
+                
+            playlist_id = match.group(1)
+            url = f'https://163api.qijieya.cn/playlist/detail?id={playlist_id}&limit=1000'
+            
+            # 网络请求
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            if data.get('code') != 200:
+                self.error_occurred.emit(f"API返回错误: {data.get('message', '未知错误')}")
+                return
+                
+            playlist_info = data.get('playlist', {})
+            tracks = playlist_info.get('tracks', [])
+            track_ids = playlist_info.get('trackIds', [])
+            
+            if not tracks and not track_ids:
+                self.error_occurred.emit("歌单为空或无法获取歌曲列表")
+                return
+            
+            # 如果tracks数量明显少于trackIds，使用trackIds获取完整歌单
+            if len(track_ids) > len(tracks) and len(track_ids) > 10:
+                # 使用trackIds批量获取歌曲详情
+                track_id_list = [str(item['id']) for item in track_ids]
+                batch_size = 50
+                all_tracks = []
+                
+                for i in range(0, len(track_id_list), batch_size):
+                    batch_ids = track_id_list[i:i+batch_size]
+                    ids_str = ','.join(batch_ids)
+                    
+                    try:
+                        batch_url = f'https://163api.qijieya.cn/song/detail?ids={ids_str}'
+                        batch_response = requests.get(batch_url, timeout=10)
+                        batch_data = batch_response.json()
+                        
+                        if batch_data.get('code') == 200 and batch_data.get('songs'):
+                            all_tracks.extend(batch_data['songs'])
+                    except Exception as e:
+                        continue
+                
+                if all_tracks:
+                    tracks = all_tracks
+            
+            if not tracks:
+                self.error_occurred.emit("无法获取歌曲详情")
+                return
+            
+            # 优化策略：分批处理歌曲URL获取，减少等待时间
+            songs = []
+            total_tracks = len(tracks)
+            
+            # 策略1：先加载前20首歌曲，让用户可以快速开始播放
+            initial_batch_size = min(20, total_tracks)
+            
+            # 批量获取前20首歌曲的URL
+            initial_track_ids = [str(track['id']) for track in tracks[:initial_batch_size]]
+            if initial_track_ids:
+                try:
+                    # 使用批量API获取URL，比逐个请求快很多
+                    batch_url_api = f'https://163api.qijieya.cn/song/url?id={",".join(initial_track_ids)}'
+                    batch_response = requests.get(batch_url_api, timeout=10)
+                    batch_data = batch_response.json()
+                    
+                    if batch_data.get('code') == 200 and batch_data.get('data'):
+                        url_map = {str(item['id']): item.get('url') for item in batch_data['data'] if item.get('url')}
+                        
+                        # 构建初始歌曲列表
+                        for track in tracks[:initial_batch_size]:
+                            song_id = str(track['id'])
+                            if song_id in url_map and url_map[song_id]:
+                                songs.append({
+                                    'name': track['name'],
+                                    'url': url_map[song_id],
+                                    'artist': track['ar'][0]['name'] if track.get('ar') else 'Unknown'
+                                })
+                        
+                        # 先发送初始歌曲列表，让用户可以开始播放
+                        if songs:
+                            self.playlist_loaded.emit(songs)
+                            self.progress_updated.emit(len(songs), total_tracks)
+                            
+                except Exception as e:
+                    # 如果批量获取失败，回退到逐个获取
+                    for i, track in enumerate(tracks[:initial_batch_size]):
+                        try:
+                            song_id = track['id']
+                            song_url_api = f'https://163api.qijieya.cn/song/url?id={song_id}'
+                            song_response = requests.get(song_url_api, timeout=3)
+                            song_data = song_response.json()
+                            
+                            if song_data.get('code') == 200 and song_data.get('data'):
+                                song_url = song_data['data'][0].get('url')
+                                if song_url:
+                                    songs.append({
+                                        'name': track['name'],
+                                        'url': song_url,
+                                        'artist': track['ar'][0]['name'] if track.get('ar') else 'Unknown'
+                                    })
+                                    
+                            # 每处理5首歌曲就更新一次进度
+                            if (i + 1) % 5 == 0:
+                                self.progress_updated.emit(len(songs), total_tracks)
+                                
+                        except Exception:
+                            continue
+                    
+                    # 发送初始歌曲列表
+                    if songs:
+                        self.playlist_loaded.emit(songs)
+                        self.progress_updated.emit(len(songs), total_tracks)
+            
+            # 如果还有更多歌曲，在后台继续批量加载剩余歌曲
+            if total_tracks > initial_batch_size and songs:
+                remaining_tracks = tracks[initial_batch_size:]
+                batch_size = 20  # 每批处理20首歌曲
+                
+                for batch_start in range(0, len(remaining_tracks), batch_size):
+                    batch_tracks = remaining_tracks[batch_start:batch_start + batch_size]
+                    batch_track_ids = [str(track['id']) for track in batch_tracks]
+                    
+                    try:
+                        # 批量获取URL
+                        batch_url_api = f'https://163api.qijieya.cn/song/url?id={",".join(batch_track_ids)}'
+                        batch_response = requests.get(batch_url_api, timeout=10)
+                        batch_data = batch_response.json()
+                        
+                        if batch_data.get('code') == 200 and batch_data.get('data'):
+                            url_map = {str(item['id']): item.get('url') for item in batch_data['data'] if item.get('url')}
+                            
+                            # 构建这一批的歌曲列表
+                            batch_songs = []
+                            for track in batch_tracks:
+                                song_id = str(track['id'])
+                                if song_id in url_map and url_map[song_id]:
+                                    batch_songs.append({
+                                        'name': track['name'],
+                                        'url': url_map[song_id],
+                                        'artist': track['ar'][0]['name'] if track.get('ar') else 'Unknown'
+                                    })
+                            
+                            # 添加到总列表
+                            songs.extend(batch_songs)
+                            
+                            # 更新进度和列表显示
+                            self.progress_updated.emit(len(songs), total_tracks)
+                            self.playlist_loaded.emit(songs)
+                            
+                    except Exception as e:
+                        # 如果批量获取失败，回退到逐个获取这一批
+                        for track in batch_tracks:
+                            try:
+                                song_id = track['id']
+                                song_url_api = f'https://163api.qijieya.cn/song/url?id={song_id}'
+                                song_response = requests.get(song_url_api, timeout=3)
+                                song_data = song_response.json()
+                                
+                                if song_data.get('code') == 200 and song_data.get('data'):
+                                    song_url = song_data['data'][0].get('url')
+                                    if song_url:
+                                        songs.append({
+                                            'name': track['name'],
+                                            'url': song_url,
+                                            'artist': track['ar'][0]['name'] if track.get('ar') else 'Unknown'
+                                        })
+                            except Exception:
+                                continue
+                        
+                        # 更新进度和列表显示
+                        self.progress_updated.emit(len(songs), total_tracks)
+                        self.playlist_loaded.emit(songs)
+                
+                # 最终更新完整列表
+                if len(songs) > initial_batch_size:
+                    self.playlist_loaded.emit(songs)
+                    self.progress_updated.emit(len(songs), total_tracks)
+            
+            if not songs:
+                self.error_occurred.emit("没有找到可播放的歌曲")
+                
+        except requests.exceptions.Timeout:
+            self.error_occurred.emit("网络请求超时，请检查网络连接")
+        except requests.exceptions.RequestException as e:
+            self.error_occurred.emit(f"网络请求失败: {e}")
+        except Exception as e:
+            self.error_occurred.emit(f"加载歌单时发生错误: {e}")
+
 # 音乐播放器对话框
 class MusicPlayerDialog(QDialog):
     def __init__(self, parent=None):
@@ -784,6 +994,9 @@ class MusicPlayerDialog(QDialog):
         # 临时文件管理
         self.current_temp_file = None
         self.temp_files = []  # 存储所有临时文件路径
+        
+        # 歌单缓存机制
+        self.playlist_cache = {}  # 缓存已加载的歌单 {playlist_id: songs_list}
         
         # 初始化音频系统
         self.init_audio()
@@ -878,76 +1091,19 @@ class MusicPlayerDialog(QDialog):
         
         self.playlist_input = QLineEdit()
         self.playlist_input.setPlaceholderText("输入网易云歌单链接")
-        self.playlist_input.setStyleSheet("""
-            QLineEdit {
-                background: #0e1b2a;
-                color: #00ffff;
-                border: 2px solid #00ffff;
-                padding: 10px;
-                border-radius: 8px;
-                font-size: 13px;
-            }
-            QLineEdit:focus {
-                border-color: #33ffff;
-                background: #1a2332;
-            }
-        """)
         self.playlist_input.setMinimumHeight(40)
         
-        load_btn = QPushButton("加载歌单")
-        load_btn.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #00ffff, stop:1 #ff6b6b);
-                color: #000000;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 8px;
-                font-weight: bold;
-                font-size: 13px;
-                min-width: 80px;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #33ffff, stop:1 #ff9999);
-            }
-            QPushButton:pressed {
-                background: #ff6b6b;
-            }
-        """)
-        load_btn.setMinimumHeight(40)
-        load_btn.clicked.connect(self.load_playlist)
+        self.load_btn = QPushButton("加载歌单")
+        self.load_btn.setMinimumHeight(40)
+        self.load_btn.clicked.connect(self.load_playlist_async)
         
         input_layout.addWidget(self.playlist_input, 3)
-        input_layout.addWidget(load_btn, 1)
+        input_layout.addWidget(self.load_btn, 1)
         layout.addLayout(input_layout)
         
         # 2. 歌单列表 - 主要显示区域
         self.song_list = QListWidget()
-        self.song_list.setStyleSheet("""
-            QListWidget {
-                background: #0e1b2a;
-                color: #00ffff;
-                border: 2px solid #00ffff;
-                border-radius: 8px;
-                font-size: 13px;
-            }
-            QListWidget::item {
-                padding: 12px 8px;
-                border-bottom: 1px solid #1a2332;
-                min-height: 25px;
-            }
-            QListWidget::item:selected {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #2a4a5a, stop:1 #3a5a6a);
-                color: #ffffff;
-                border-left: 4px solid #00ffff;
-            }
-            QListWidget::item:hover {
-                background: #1a3a4a;
-                color: #33ffff;
-            }
-        """)
+        # 样式将在apply_theme中设置
         self.song_list.setMinimumHeight(280)
         self.song_list.itemClicked.connect(self.play_selected_song)
         layout.addWidget(self.song_list)
@@ -955,20 +1111,7 @@ class MusicPlayerDialog(QDialog):
         # 3. 当前播放歌曲信息
         self.song_label = QLabel(self.current_song)
         self.song_label.setAlignment(Qt.AlignCenter)
-        self.song_label.setStyleSheet("""
-            QLabel {
-                font-size: 15px;
-                font-weight: bold;
-                color: #ffffff;
-                text-shadow: 0 0 8px #00ffff;
-                padding: 12px;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 rgba(14, 27, 42, 0.9), stop:1 rgba(26, 35, 50, 0.9));
-                border: 2px solid #00ffff;
-                border-radius: 8px;
-                min-height: 20px;
-            }
-        """)
+        # 样式将在apply_theme中设置
         layout.addWidget(self.song_label)
         
         # 4. 进度条和时间显示
@@ -981,39 +1124,7 @@ class MusicPlayerDialog(QDialog):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(self.progress_value)
         self.progress_bar.valueChanged.connect(self.seek_position)
-        self.progress_bar.setStyleSheet("""
-            QSlider::groove:horizontal {
-                border: 2px solid #00ffff;
-                height: 8px;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #0e1b2a, stop:1 #1a1a2e);
-                border-radius: 6px;
-            }
-            QSlider::handle:horizontal {
-                background: qradial-gradient(cx:0.5, cy:0.5, radius: 0.8,
-                    fx:0.5, fy:0.5, stop:0 #00ffff, stop:1 #0099cc);
-                border: 2px solid #00ffff;
-                width: 18px;
-                margin: -7px 0;
-                border-radius: 11px;
-            }
-            QSlider::handle:horizontal:hover {
-                background: qradial-gradient(cx:0.5, cy:0.5, radius: 0.8,
-                    fx:0.5, fy:0.5, stop:0 #33ffff, stop:1 #33ccff);
-                width: 20px;
-                margin: -8px 0;
-                border-radius: 12px;
-            }
-            QSlider::sub-page:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #00ffff, stop:1 #ff6b6b);
-                border-radius: 4px;
-            }
-            QSlider::add-page:horizontal {
-                background: #0e1b2a;
-                border-radius: 4px;
-            }
-        """)
+        # 样式将在apply_theme中设置
         
         # 时间标签
         time_layout = QHBoxLayout()
@@ -1022,9 +1133,7 @@ class MusicPlayerDialog(QDialog):
         self.current_time_label = QLabel(self.current_time)
         self.total_time_label = QLabel(self.total_time)
         
-        time_style = "color: #00ffff; font-size: 11px; font-weight: bold; text-shadow: 0 0 4px #00ffff;"
-        self.current_time_label.setStyleSheet(time_style)
-        self.total_time_label.setStyleSheet(time_style)
+        # 样式将在apply_theme中设置
         
         time_layout.addWidget(self.current_time_label)
         time_layout.addStretch()
@@ -1039,9 +1148,9 @@ class MusicPlayerDialog(QDialog):
         controls_layout.setSpacing(20)
         
         # 上一首按钮
-        prev_btn = QPushButton("⏮")
-        prev_btn.setFixedSize(55, 55)
-        prev_btn.clicked.connect(self.prev_song)
+        self.prev_btn = QPushButton("⏮")
+        self.prev_btn.setFixedSize(55, 55)
+        self.prev_btn.clicked.connect(self.prev_song)
         
         # 播放/暂停按钮
         self.play_btn = QPushButton("▶")
@@ -1049,44 +1158,16 @@ class MusicPlayerDialog(QDialog):
         self.play_btn.clicked.connect(self.toggle_play)
         
         # 下一首按钮
-        next_btn = QPushButton("⏭")
-        next_btn.setFixedSize(55, 55)
-        next_btn.clicked.connect(self.next_song)
+        self.next_btn = QPushButton("⏭")
+        self.next_btn.setFixedSize(55, 55)
+        self.next_btn.clicked.connect(self.next_song)
         
-        # 设置按钮样式
-        button_style = """
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #0e1b2a, stop:1 #16213e);
-                color: #00ffff;
-                border: 3px solid #00ffff;
-                border-radius: 27px;
-                font-size: 20px;
-                font-weight: bold;
-                text-shadow: 0 0 8px #00ffff;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #00ffff, stop:1 #ff6b6b);
-                color: #000000;
-                border-color: #33ffff;
-                text-shadow: none;
-            }
-            QPushButton:pressed {
-                background: #ff6b6b;
-                color: #000000;
-                border-color: #ff9999;
-            }
-        """
-        
-        prev_btn.setStyleSheet(button_style)
-        self.play_btn.setStyleSheet(button_style.replace("border-radius: 27px;", "border-radius: 35px;").replace("font-size: 20px;", "font-size: 24px;"))
-        next_btn.setStyleSheet(button_style)
+        # 样式将在apply_theme中设置
         
         controls_layout.addStretch()
-        controls_layout.addWidget(prev_btn)
+        controls_layout.addWidget(self.prev_btn)
         controls_layout.addWidget(self.play_btn)
-        controls_layout.addWidget(next_btn)
+        controls_layout.addWidget(self.next_btn)
         controls_layout.addStretch()
         
         layout.addLayout(controls_layout)
@@ -1095,81 +1176,82 @@ class MusicPlayerDialog(QDialog):
         volume_layout = QHBoxLayout()
         volume_layout.setSpacing(10)
         
-        volume_label = QLabel("🔊")
-        volume_label.setStyleSheet("color: #00ffff; font-size: 16px; text-shadow: 0 0 6px #00ffff;")
+        self.volume_label = QLabel("🔊")
+        # 样式将在apply_theme中设置
         
         from PyQt5.QtWidgets import QSlider
         self.volume_slider = QSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(self.volume)
-        self.volume_slider.setStyleSheet("""
-            QSlider::groove:horizontal {
-                border: 2px solid #00ffff;
-                height: 10px;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #0e1b2a, stop:1 #1a1a2e);
-                border-radius: 7px;
-            }
-            QSlider::handle:horizontal {
-                background: qradial-gradient(cx:0.5, cy:0.5, radius: 0.8,
-                    fx:0.5, fy:0.5, stop:0 #00ffff, stop:1 #ff6b6b);
-                border: 2px solid #00ffff;
-                width: 16px;
-                margin: -5px 0;
-                border-radius: 10px;
-            }
-            QSlider::handle:horizontal:hover {
-                background: qradial-gradient(cx:0.5, cy:0.5, radius: 0.8,
-                    fx:0.5, fy:0.5, stop:0 #ff9b9b, stop:1 #33ff66);
-                width: 18px;
-                margin: -6px 0;
-                border-radius: 11px;
-            }
-            QSlider::sub-page:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #33ff66, stop:1 #ffff66);
-                border-radius: 5px;
-            }
-        """)
+        # 样式将在apply_theme中设置
         
         self.volume_slider.valueChanged.connect(self.change_volume)
         
         self.volume_label_value = QLabel(f"{self.volume}%")
-        self.volume_label_value.setStyleSheet("color: #00ffff; font-size: 12px; min-width: 40px; font-weight: bold; text-shadow: 0 0 4px #00ffff;")
+        # 样式将在apply_theme中设置
         
-        volume_layout.addWidget(volume_label)
+        volume_layout.addWidget(self.volume_label)
         volume_layout.addWidget(self.volume_slider, 1)
         volume_layout.addWidget(self.volume_label_value)
         layout.addLayout(volume_layout)
         
         # 7. 返回按钮
-        back_btn = QPushButton("🔙 返回主界面")
-        back_btn.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #0e1b2a, stop:1 #16213e);
-                color: #60e5fa;
-                border: 2px solid #60e5fa;
-                padding: 12px 24px;
-                border-radius: 10px;
-                font-weight: bold;
-                font-size: 14px;
-                text-shadow: 0 0 6px #60e5fa;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #3b82f6, stop:1 #2563eb);
-                border-color: #93c5fd;
-                color: #ffffff;
-                text-shadow: none;
-            }
-            QPushButton:pressed {
-                background: #60a5fa;
-                color: #000000;
-            }
-        """)
-        back_btn.clicked.connect(self.close)
-        layout.addWidget(back_btn)
+        self.back_btn = QPushButton("🔙 返回主界面")
+        # 样式将在apply_theme中设置
+        self.back_btn.clicked.connect(self.close)
+        layout.addWidget(self.back_btn)
+    
+    def load_playlist_async(self):
+        """异步加载歌单，避免阻塞UI"""
+        # 创建并启动加载线程
+        self.playlist_thread = PlaylistLoaderThread(self.playlist_input.text().strip(), self)
+        self.playlist_thread.playlist_loaded.connect(self.on_playlist_loaded)
+        self.playlist_thread.error_occurred.connect(self.on_playlist_error)
+        self.playlist_thread.progress_updated.connect(self.on_loading_progress)
+        self.playlist_thread.start()
+        
+        if self.parent_window:
+            self.parent_window.log_message("🎵 开始快速加载歌单（优先加载前20首）...")
+    
+    def on_playlist_loaded(self, songs):
+        """歌单加载完成的回调"""
+        self.songs = songs
+        self.song_list.clear()
+        
+        for i, song in enumerate(songs):
+            item_text = f"{i+1:02d}. {song['name']} - {song['artist']}"
+            self.song_list.addItem(item_text)
+        
+        # 更新当前歌曲信息显示
+        self.current_index = 0
+        self.update_song_info()
+        
+        # 保存到缓存
+        playlist_url = self.playlist_input.text().strip()
+        match = re.search(r'playlist\?id=(\d+)', playlist_url)
+        if match:
+            playlist_id = match.group(1)
+            self.playlist_cache[playlist_id] = songs
+        
+        if self.parent_window:
+            # 只在歌单真正完成加载时打印，避免中间更新时重复打印
+            if not hasattr(self, '_last_song_count') or len(songs) != self._last_song_count:
+                if len(songs) >= 20:  # 只在有足够歌曲时打印完成消息
+                    self.parent_window.log_message(f"✅ 歌单加载完成，共 {len(songs)} 首歌曲（已缓存）")
+                self._last_song_count = len(songs)
+    
+    def on_playlist_error(self, error_message):
+        """歌单加载错误的回调"""
+        QMessageBox.warning(self, "错误", error_message)
+        if self.parent_window:
+            self.parent_window.log_message(f"❌ 歌单加载失败: {error_message}")
+    
+    def on_loading_progress(self, current, total):
+        """歌单加载进度的回调"""
+        if self.parent_window:
+            # 只在特定进度节点打印日志，避免刷屏
+            if current == 20 or current % 50 == 0 or current == total:
+                self.parent_window.log_message(f"📥 已加载 {current}/{total} 首歌曲，可以开始播放了！", info=True)
     
     def load_playlist(self):
         link = self.playlist_input.text().strip()
@@ -1180,7 +1262,8 @@ class MusicPlayerDialog(QDialog):
             match = re.search(r'playlist\?id=(\d+)', link)
             if match:
                 playlist_id = match.group(1)
-                url = f'https://163api.qijieya.cn/playlist/detail?id={playlist_id}'
+                # 添加limit参数来尝试获取更多歌曲，默认API可能只返回10首
+                url = f'https://163api.qijieya.cn/playlist/detail?id={playlist_id}&limit=1000'
                 
                 # 添加超时和错误处理
                 response = requests.get(url, timeout=10)
@@ -1190,6 +1273,45 @@ class MusicPlayerDialog(QDialog):
                 if data.get('code') == 200:
                     playlist_info = data.get('playlist', {})
                     tracks = playlist_info.get('tracks', [])
+                    track_ids = playlist_info.get('trackIds', [])
+                    
+                    # 如果tracks为空或数量少于trackIds，说明获取的是不完整的歌单
+                    if not tracks and not track_ids:
+                        QMessageBox.warning(self, "警告", "歌单为空或无法获取歌曲列表")
+                        return
+                    
+                    # 如果tracks数量明显少于trackIds，使用trackIds获取完整歌单
+                    if len(track_ids) > len(tracks) and len(track_ids) > 10:
+                        if self.parent_window:
+                            self.parent_window.log_message(f"检测到不完整歌单，tracks: {len(tracks)}, trackIds: {len(track_ids)}，尝试获取完整歌单...")
+                        
+                        # 使用trackIds批量获取歌曲详情
+                        track_id_list = [str(item['id']) for item in track_ids]
+                        batch_size = 50  # 每次请求50首歌曲
+                        all_tracks = []
+                        
+                        for i in range(0, len(track_id_list), batch_size):
+                            batch_ids = track_id_list[i:i+batch_size]
+                            ids_str = ','.join(batch_ids)
+                            
+                            try:
+                                batch_url = f'https://163api.qijieya.cn/song/detail?ids={ids_str}'
+                                batch_response = requests.get(batch_url, timeout=10)
+                                batch_data = batch_response.json()
+                                
+                                if batch_data.get('code') == 200 and batch_data.get('songs'):
+                                    all_tracks.extend(batch_data['songs'])
+                                    if self.parent_window:
+                                        self.parent_window.log_message(f"已获取 {len(all_tracks)}/{len(track_id_list)} 首歌曲详情")
+                            except Exception as e:
+                                if self.parent_window:
+                                    self.parent_window.log_message(f"批量获取歌曲详情失败: {e}", error=True)
+                                continue
+                        
+                        if all_tracks:
+                            tracks = all_tracks
+                            if self.parent_window:
+                                self.parent_window.log_message(f"成功获取完整歌单，共 {len(tracks)} 首歌曲")
                     
                     if not tracks:
                         QMessageBox.warning(self, "警告", "歌单为空或无法获取歌曲列表")
@@ -1245,10 +1367,13 @@ class MusicPlayerDialog(QDialog):
     def update_song_info(self):
         if self.songs and 0 <= self.current_index < len(self.songs):
             song = self.songs[self.current_index]
-            self.current_song = song['name']
+            self.current_song = f"{song['name']} - {song['artist']}"
             # 将歌曲名和歌手信息合并显示
             display_text = f"{song['name']} - {song['artist']}"
             self.song_label.setText(display_text)
+        else:
+            self.current_song = "No Song Selected"
+            self.song_label.setText(self.current_song)
 
     def populate_song_list(self):
         self.song_list.clear()
@@ -1257,9 +1382,14 @@ class MusicPlayerDialog(QDialog):
 
     def play_selected_song(self, item):
         selected_text = item.text()
-        for idx, song in enumerate(self.songs):
-            if f"{song['name']} - {song['artist']}" == selected_text:
-                self.current_index = idx
+        # 从列表项文本中提取歌曲索引（格式："01. 歌名 - 歌手"）
+        import re
+        match = re.match(r'(\d+)\. (.+)', selected_text)
+        if match:
+            # 使用序号直接定位歌曲
+            song_index = int(match.group(1)) - 1  # 转换为0基索引
+            if 0 <= song_index < len(self.songs):
+                self.current_index = song_index
                 self.update_song_info()
                 
                 # 停止当前播放并清理临时文件，确保播放新选择的歌曲
@@ -1274,23 +1404,261 @@ class MusicPlayerDialog(QDialog):
                 self.play_btn.setText("⏸")
                 self.play_timer.start(1000)
                 self.play_new_song()
-                break
 
     def apply_theme(self):
         """应用主题样式"""
-        self.setStyleSheet("""
-            QDialog {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #05080d, stop:0.5 #0e1b2a, stop:1 #121826);
-                color: #00ffff;
-            }
+        # 获取父窗口的主题设置
+        if self.parent_window and hasattr(self.parent_window, 'themes') and hasattr(self.parent_window, 'current_theme'):
+            theme = self.parent_window.themes[self.parent_window.current_theme]
+            accent_color = theme['accent_color']
+            window_bg = theme['window_bg']
+            text_color = theme['terminal_text'] if self.parent_window.current_theme == 'light' else accent_color
+            terminal_bg = theme['terminal_bg']
+            button_bg = theme['button_bg']
+            button_hover = theme['button_hover']
+        else:
+            # 默认颜色
+            accent_color = '#00ffff'
+            window_bg = '#0e1b2a'
+            text_color = '#ffffff'
+            terminal_bg = '#0e1b2a'
+            button_bg = '#1a1a2e'
+            button_hover = '#2c3e50'
+        
+        self.setStyleSheet(f"""
+            QDialog {{
+                background: {window_bg};
+                color: {text_color};
+            }}
         """)
+        
+        # 应用主题到各个组件
+        if hasattr(self, 'song_list'):
+            self.song_list.setStyleSheet(f"""
+                QListWidget {{
+                    background: {terminal_bg};
+                    color: {text_color};
+                    border: 2px solid {accent_color};
+                    border-radius: 8px;
+                    font-size: 13px;
+                }}
+                QListWidget::item {{
+                    padding: 12px 8px;
+                    border-bottom: 1px solid {accent_color};
+                    min-height: 25px;
+                }}
+                QListWidget::item:selected {{
+                    background: {accent_color};
+                    color: {window_bg};
+                    border-left: 4px solid {text_color};
+                }}
+                QListWidget::item:hover {{
+                    background: {accent_color};
+                    color: {window_bg};
+                }}
+            """)
+        
+        if hasattr(self, 'song_label'):
+            self.song_label.setStyleSheet(f"""
+                QLabel {{
+                    font-size: 15px;
+                    font-weight: bold;
+                    color: {text_color};
+                    padding: 12px;
+                    background: {terminal_bg};
+                    border: 2px solid {accent_color};
+                    border-radius: 8px;
+                    min-height: 20px;
+                }}
+            """)
+        
+        if hasattr(self, 'current_time_label') and hasattr(self, 'total_time_label'):
+            time_style = f"color: {accent_color}; font-size: 11px; font-weight: bold;"
+            self.current_time_label.setStyleSheet(time_style)
+            self.total_time_label.setStyleSheet(time_style)
+        
+        # 应用主题到输入框
+        if hasattr(self, 'playlist_input'):
+            self.playlist_input.setStyleSheet(f"""
+                QLineEdit {{
+                    background: {terminal_bg};
+                    color: {text_color};
+                    border: 2px solid {accent_color};
+                    padding: 10px;
+                    border-radius: 8px;
+                    font-size: 13px;
+                }}
+                QLineEdit:focus {{
+                    border-color: {accent_color};
+                    background: {terminal_bg};
+                }}
+            """)
+        
+        # 应用主题到进度条
+        if hasattr(self, 'progress_bar'):
+            self.progress_bar.setStyleSheet(f"""
+                QSlider::groove:horizontal {{
+                    border: 2px solid {accent_color};
+                    height: 8px;
+                    background: {terminal_bg};
+                    border-radius: 6px;
+                }}
+                QSlider::handle:horizontal {{
+                    background: {accent_color};
+                    border: 2px solid {accent_color};
+                    width: 18px;
+                    margin: -7px 0;
+                    border-radius: 11px;
+                }}
+                QSlider::handle:horizontal:hover {{
+                    background: {button_hover};
+                    width: 20px;
+                    margin: -8px 0;
+                    border-radius: 12px;
+                }}
+                QSlider::sub-page:horizontal {{
+                    background: {accent_color};
+                    border-radius: 4px;
+                }}
+                QSlider::add-page:horizontal {{
+                    background: {terminal_bg};
+                    border-radius: 4px;
+                }}
+            """)
+        
+        # 应用主题到音量滑块
+        if hasattr(self, 'volume_slider'):
+            self.volume_slider.setStyleSheet(f"""
+                QSlider::groove:horizontal {{
+                    border: 2px solid {accent_color};
+                    height: 10px;
+                    background: {terminal_bg};
+                    border-radius: 7px;
+                }}
+                QSlider::handle:horizontal {{
+                    background: {accent_color};
+                    border: 2px solid {accent_color};
+                    width: 16px;
+                    margin: -5px 0;
+                    border-radius: 10px;
+                }}
+                QSlider::handle:horizontal:hover {{
+                    background: {button_hover};
+                    width: 18px;
+                    margin: -6px 0;
+                    border-radius: 11px;
+                }}
+                QSlider::sub-page:horizontal {{
+                    background: {accent_color};
+                    border-radius: 5px;
+                }}
+            """)
+        
+        # 应用主题到音量标签
+        if hasattr(self, 'volume_label_value'):
+            self.volume_label_value.setStyleSheet(f"color: {accent_color}; font-size: 12px; min-width: 40px; font-weight: bold;")
+        
+        if hasattr(self, 'volume_label'):
+            self.volume_label.setStyleSheet(f"color: {accent_color}; font-size: 16px;")
+        
+        # 应用主题到按钮
+        button_style = f"""
+            QPushButton {{
+                background: {button_bg};
+                color: {text_color};
+                border: 2px solid {accent_color};
+                border-radius: 8px;
+                font-weight: bold;
+                padding: 10px 20px;
+            }}
+            QPushButton:hover {{
+                background: {button_hover};
+                border-color: {accent_color};
+            }}
+            QPushButton:pressed {{
+                background: {accent_color};
+                color: {window_bg};
+            }}
+        """
+        
+        if hasattr(self, 'load_btn'):
+            self.load_btn.setStyleSheet(button_style + f"font-size: 13px; min-width: 80px;")
+        
+        # 控制按钮样式
+        control_button_style = f"""
+            QPushButton {{
+                background: {button_bg};
+                color: {accent_color};
+                border: 3px solid {accent_color};
+                border-radius: 27px;
+                font-size: 20px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: {accent_color};
+                color: {window_bg};
+            }}
+            QPushButton:pressed {{
+                background: {button_hover};
+                color: {text_color};
+            }}
+        """
+        
+        if hasattr(self, 'prev_btn'):
+            self.prev_btn.setStyleSheet(control_button_style)
+        
+        if hasattr(self, 'play_btn'):
+            play_button_style = control_button_style.replace("border-radius: 27px;", "border-radius: 35px;").replace("font-size: 20px;", "font-size: 24px;")
+            self.play_btn.setStyleSheet(play_button_style)
+        
+        if hasattr(self, 'next_btn'):
+            self.next_btn.setStyleSheet(control_button_style)
+        
+        if hasattr(self, 'back_btn'):
+            self.back_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {button_bg};
+                    color: {text_color};
+                    border: 2px solid {accent_color};
+                    padding: 12px 24px;
+                    border-radius: 10px;
+                    font-weight: bold;
+                    font-size: 14px;
+                }}
+                QPushButton:hover {{
+                    background: {button_hover};
+                    border-color: {accent_color};
+                    color: {text_color};
+                }}
+                QPushButton:pressed {{
+                    background: {accent_color};
+                    color: {window_bg};
+                }}
+            """)
     
     def load_default_playlist(self):
         """自动加载默认歌单"""
+        # 检查是否已经有歌曲列表，如果有就不重复加载
+        if self.songs:
+            if self.parent_window:
+                self.parent_window.log_message("🎵 歌单已加载，跳过重复加载", info=True)
+            return
+            
         default_url = "https://music.163.com/playlist?id=708924941&uct2=U2FsdGVkX19Ze6Sk+iJIQQY7GEPwJhDzasPftEcR4uw="
         self.playlist_input.setText(default_url)
-        self.load_playlist()
+        
+        # 检查缓存
+        playlist_id = "708924941"
+        if playlist_id in self.playlist_cache:
+            if self.parent_window:
+                self.parent_window.log_message("⚡ 从缓存加载歌单，瞬间完成！", success=True)
+            self.songs = self.playlist_cache[playlist_id]
+            self.populate_song_list()
+            self.update_song_info()
+            return
+        
+        # 延迟加载，避免初始化时阻塞UI
+        QTimer.singleShot(1000, self.load_playlist_async)
     
     def toggle_play(self):
         """切换播放/暂停状态"""
@@ -1347,8 +1715,11 @@ class MusicPlayerDialog(QDialog):
                 self.play_new_song()
         else:
             songs = ["Cyber Dreams", "Neon Nights", "Digital Love", "Future Bass", "Synthwave"]
-            current_index = songs.index(self.current_song) if self.current_song in songs else 0
-            self.current_song = songs[(current_index - 1) % len(songs)]
+            # 从当前显示的歌曲名中提取歌曲名（去掉歌手信息）
+            current_song_name = self.current_song.split(' - ')[0] if ' - ' in self.current_song else self.current_song
+            current_index = songs.index(current_song_name) if current_song_name in songs else 0
+            new_song = songs[(current_index - 1) % len(songs)]
+            self.current_song = new_song
             self.song_label.setText(self.current_song)
             self.progress_value = 0
             self.progress_bar.setValue(self.progress_value)
@@ -1371,8 +1742,11 @@ class MusicPlayerDialog(QDialog):
                 self.play_new_song()
         else:
             songs = ["Cyber Dreams", "Neon Nights", "Digital Love", "Future Bass", "Synthwave"]
-            current_index = songs.index(self.current_song) if self.current_song in songs else 0
-            self.current_song = songs[(current_index + 1) % len(songs)]
+            # 从当前显示的歌曲名中提取歌曲名（去掉歌手信息）
+            current_song_name = self.current_song.split(' - ')[0] if ' - ' in self.current_song else self.current_song
+            current_index = songs.index(current_song_name) if current_song_name in songs else 0
+            new_song = songs[(current_index + 1) % len(songs)]
+            self.current_song = new_song
             self.song_label.setText(self.current_song)
             self.progress_value = 0
             self.progress_bar.setValue(self.progress_value)
@@ -1840,6 +2214,7 @@ class CommandManager(QMainWindow):
             # 音乐播放器相关
             self.ready_click_count = 0  # READY按钮点击计数
             self.music_player_dialog = None
+            self.music_player_triggered = False  # 标记音乐播放器是否已经被触发过
             
             logging.info("初始化主题...")
             self.init_themes()
@@ -2168,21 +2543,21 @@ class CommandManager(QMainWindow):
         
         # 缩小按钮
         self.scale_down_btn = QPushButton("－")
-        self.scale_down_btn.setFixedSize(32, 22)
+        self.scale_down_btn.setFixedSize(40, self.header_control_height)
         self.scale_down_btn.setToolTip("缩小界面 (Ctrl+-)")
         self.scale_down_btn.setCursor(Qt.PointingHandCursor)
         self.scale_down_btn.clicked.connect(self.scale_down)
         
         # 重置按钮
         self.scale_reset_btn = QPushButton("100%")
-        self.scale_reset_btn.setFixedSize(42, 22)
+        self.scale_reset_btn.setFixedSize(60, self.header_control_height)
         self.scale_reset_btn.setToolTip("重置界面大小 (Ctrl+0)")
         self.scale_reset_btn.setCursor(Qt.PointingHandCursor)
         self.scale_reset_btn.clicked.connect(self.scale_reset)
         
         # 放大按钮
         self.scale_up_btn = QPushButton("＋")
-        self.scale_up_btn.setFixedSize(32, 22)
+        self.scale_up_btn.setFixedSize(40, self.header_control_height)
         self.scale_up_btn.setToolTip("放大界面 (Ctrl++)")
         self.scale_up_btn.setCursor(Qt.PointingHandCursor)
         self.scale_up_btn.clicked.connect(self.scale_up)
@@ -2204,12 +2579,12 @@ class CommandManager(QMainWindow):
                 background-color: transparent;
                 color: {theme['accent_color']};
                 border: 2px solid {theme['accent_color']};
-                border-radius: 6px;
+                border-radius: 8px;
                 font-weight: bold;
-                font-size: 16px;
+                font-size: 18px;
                 font-family: 'Arial', 'Microsoft YaHei', sans-serif;
-                padding: 2px;
-                margin: 1px;
+                padding: 8px;
+                margin: 2px;
             }}
             QPushButton:hover {{
                 background-color: rgba(255, 255, 255, 0.1);
@@ -3237,6 +3612,10 @@ class CommandManager(QMainWindow):
         
         # 设置全局悬浮提示样式
         self.apply_tooltip_style(theme)
+        
+        # 更新音乐播放器对话框主题（如果存在）
+        if hasattr(self, 'music_dialog') and self.music_dialog:
+            self.music_dialog.apply_theme()
 
     def get_menu_stylesheet(self, theme):
         # 通用 QMenu/QAction 样式，保证在深色/浅色/高对比主题下可读
@@ -3585,16 +3964,7 @@ class CommandManager(QMainWindow):
         
         # 更新终端状态标签
         if hasattr(self, 'terminal_status'):
-            status_color = theme['accent_color'] if self.current_theme != 'light' else '#28a745'
-            self.terminal_status.setStyleSheet(f"""
-                font-size: 12px; 
-                color: {status_color};
-                background-color: {theme['terminal_bg']};
-                padding: 2px 8px;
-                border-radius: 10px;
-                border: 1px solid {status_color};
-                font-family: 'Arial', 'Microsoft YaHei', sans-serif;
-            """)
+            self.update_terminal_status()
         
         # 更新清除按钮和文件夹按钮样式
         clear_buttons = self.findChildren(QPushButton)
@@ -4618,15 +4988,53 @@ class CommandManager(QMainWindow):
     
     def ready_clicked(self, event):
         """READY标签点击事件处理"""
-        self.ready_click_count += 1
-        
-        if self.ready_click_count >= 5:
-            # 点击5次后打开音乐播放器
-            self.ready_click_count = 0  # 重置计数
+        if self.music_player_triggered:
+            # 如果已经触发过音乐播放器，直接打开
             self.show_music_player()
+        else:
+            # 未触发过，需要点击5次
+            self.ready_click_count += 1
+            
+            if self.ready_click_count >= 5:
+                # 点击5次后打开音乐播放器
+                self.ready_click_count = 0  # 重置计数
+                self.music_player_triggered = True  # 标记已触发
+                self.update_terminal_status()  # 更新显示
+                self.show_music_player()
         
         # 调用原始的鼠标点击事件
         QLabel.mousePressEvent(self.terminal_status, event)
+    
+    def update_terminal_status(self):
+        """更新terminal_status的显示状态"""
+        if self.music_player_triggered:
+            # 已触发音乐播放器，显示为按钮样式
+            self.terminal_status.setText("🎵 音乐播放器")
+            self.terminal_status.setStyleSheet("""
+                font-size: 12px; 
+                color: #ffffff;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ff6b6b, stop:1 #ee5a24);
+                padding: 4px 12px;
+                border-radius: 12px;
+                border: 2px solid #ff6b6b;
+                font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+                font-weight: bold;
+            """)
+        else:
+            # 未触发，显示为普通文字
+            self.terminal_status.setText("(READY)")
+            theme = self.themes[self.current_theme]
+            status_color = theme['accent_color'] if self.current_theme != 'light' else '#28a745'
+            self.terminal_status.setStyleSheet(f"""
+                font-size: 12px; 
+                color: {status_color};
+                background-color: {theme['terminal_bg']};
+                padding: 2px 8px;
+                border-radius: 10px;
+                border: 1px solid {status_color};
+                font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+            """)
     
     def terminal_clicked(self, event):
         """终端区域点击事件处理"""
@@ -4644,11 +5052,14 @@ class CommandManager(QMainWindow):
         if hasattr(self, '_music_player_dialog_open') and self._music_player_dialog_open:
             return
             
+        # 复用已有的音乐播放器实例，避免重复加载歌单
+        if not hasattr(self, '_music_player_dialog') or self._music_player_dialog is None:
+            self._music_player_dialog = MusicPlayerDialog(self)
+            
         try:
             self._music_player_dialog_open = True
             self.log_message("🎵 音乐播放器已启动！", success=True)
-            dialog = MusicPlayerDialog(self)
-            dialog.exec_()
+            self._music_player_dialog.exec_()
         finally:
             self._music_player_dialog_open = False
     
@@ -4702,29 +5113,29 @@ class CommandManager(QMainWindow):
         theme = self.themes[self.current_theme]
         scale_button_style = f"""
             QPushButton {{
-                background-color: {theme['window_bg']};
+                background-color: transparent;
                 color: {theme['accent_color']};
                 border: 2px solid {theme['accent_color']};
-                border-radius: 6px;
+                border-radius: 8px;
                 font-weight: bold;
-                font-size: 16px;
+                font-size: 18px;
                 font-family: 'Arial', 'Microsoft YaHei', sans-serif;
-                padding: 2px;
-                margin: 1px;
+                padding: 8px;
+                margin: 2px;
             }}
             QPushButton:hover {{
-                background-color: {theme['accent_color']};
-                color: {theme['window_bg']};
+                background-color: rgba(255, 255, 255, 0.1);
+                color: {theme['accent_color']};
                 border-color: {theme['accent_color']};
             }}
             QPushButton:pressed {{
-                background-color: {theme['button_text']};
-                color: {theme['window_bg']};
+                background-color: rgba(255, 255, 255, 0.2);
+                color: {theme['accent_color']};
                 border-color: {theme['button_text']};
             }}
             QPushButton:focus {{
                 outline: none;
-                background-color: {theme['window_bg']};
+                background-color: transparent;
                 border: 2px solid {theme['accent_color']};
             }}
         """
