@@ -1,0 +1,50 @@
+# Build artifacts
+build/
+build/CommandManager/
+build/**/
+dist/
+
+# PyInstaller specific
+*.spec
+*.toc
+*.pkg
+*.pyz
+*.manifest
+*.exe
+*.app
+localpycs/
+base_library.zip
+warn-*.txt
+xref-*.html
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs
+logs/
+*.log
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Virtual environment
+venv/
+env/
+.env
+
+# Package files
+*.egg-info/
+*.whl
+*.tar.gz
