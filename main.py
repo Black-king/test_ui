@@ -771,6 +771,11 @@ class CommandThread(QThread):
         try:
             logging.info(f"CommandThread开始执行: {self.command}")
             
+            # 展开Windows环境变量
+            import os
+            expanded_command = os.path.expandvars(self.command)
+            logging.debug(f"环境变量展开后的命令: {expanded_command}")
+            
             # 创建进程
             self.process = QProcess()
             self.process.setProcessChannelMode(QProcess.MergedChannels)
@@ -783,7 +788,7 @@ class CommandThread(QThread):
             self.process.setProcessEnvironment(env)
             
             # 启动进程 - 使用cmd执行命令，先设置代码页为UTF-8
-            full_command = f"chcp 65001 >nul 2>&1 && {self.command}"
+            full_command = f"chcp 65001 >nul 2>&1 && {expanded_command}"
             logging.debug(f"执行完整命令: {full_command}")
             self.process.start("cmd", ["/c", full_command])
             
@@ -791,7 +796,13 @@ class CommandThread(QThread):
             if self.process.waitForFinished(-1):
                 exit_code = self.process.exitCode()
                 logging.info(f"命令执行完成，退出代码: {exit_code}")
-                if exit_code == 0:
+                
+                # 特殊处理：explorer命令即使成功也可能返回非零退出代码
+                is_explorer_command = 'explorer' in expanded_command.lower()
+                
+                if exit_code == 0 or is_explorer_command:
+                    if is_explorer_command and exit_code != 0:
+                        logging.info(f"Explorer命令特殊处理：忽略退出代码{exit_code}，视为成功")
                     self.finished_signal.emit(True, "命令执行成功")
                 else:
                     error_msg = f"命令执行失败，退出代码: {exit_code}"
@@ -1129,10 +1140,8 @@ class CommandManager(QMainWindow):
             font-size: 20px; 
             font-weight: 700;
             color: #ffffff;
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2c3e50, stop:1 #34495e);
+            background: transparent;
             padding: 10px 20px;
-            border-radius: 8px;
-            border: 2px solid #00ffff;
             font-family: 'Arial', 'Microsoft YaHei', sans-serif;
             min-height: {self.header_control_height}px;
             max-height: {self.header_control_height}px;
@@ -1495,6 +1504,27 @@ class CommandManager(QMainWindow):
         terminal_header_layout.addWidget(terminal_label)
         terminal_header_layout.addWidget(self.terminal_status, alignment=Qt.AlignCenter)
         
+        # 按钮容器布局
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setSpacing(8)
+        
+        # 打开文件夹按钮
+        folder_btn = QPushButton("📁")
+        folder_btn.setToolTip("打开当前命令管理器文件夹")
+        folder_btn.setFixedSize(40, 40)
+        folder_btn.setStyleSheet("""
+            QPushButton {
+                border-radius: 8px;
+                padding: 8px;
+                font-weight: 700;
+                font-size: 16px;
+                font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+            }
+        """)
+        folder_btn.clicked.connect(self.open_current_folder)
+        folder_btn.setCursor(Qt.PointingHandCursor)
+        buttons_layout.addWidget(folder_btn)
+        
         # 清除按钮
         clear_btn = QPushButton("PURGE")
         clear_btn.setIcon(self.create_icon("trash"))
@@ -1511,7 +1541,12 @@ class CommandManager(QMainWindow):
         """)
         clear_btn.clicked.connect(self.clear_terminal)
         clear_btn.setCursor(Qt.PointingHandCursor)
-        terminal_header_layout.addWidget(clear_btn, alignment=Qt.AlignRight)
+        buttons_layout.addWidget(clear_btn)
+        
+        # 创建按钮容器widget
+        buttons_widget = QWidget()
+        buttons_widget.setLayout(buttons_layout)
+        terminal_header_layout.addWidget(buttons_widget, alignment=Qt.AlignRight)
         
         right_layout.addWidget(terminal_header_widget)
         
@@ -2062,10 +2097,8 @@ class CommandManager(QMainWindow):
             font-size: 22px; 
             font-weight: 700;
             color: {time_color};
-            background: {theme['button_bg']};
+            background: transparent;
             padding: 10px 20px;
-            border-radius: 8px;
-            border: 2px solid {theme['accent_color']};
             font-family: 'Arial', 'Microsoft YaHei', sans-serif;
             min-height: {self.header_control_height}px;
             max-height: {self.header_control_height}px;
@@ -2497,7 +2530,7 @@ class CommandManager(QMainWindow):
                 font-family: 'Arial', 'Microsoft YaHei', sans-serif;
             """)
         
-        # 更新清除按钮样式
+        # 更新清除按钮和文件夹按钮样式
         clear_buttons = self.findChildren(QPushButton)
         for btn in clear_buttons:
             if "PURGE" in btn.text():
@@ -2523,7 +2556,29 @@ class CommandManager(QMainWindow):
                         color: {theme['button_text']};
                     }}
                 """)
-                break
+            elif "📁" in btn.text():
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background: {theme['button_bg']};
+                        color: {theme['button_text']};
+                        border: 2px solid {theme['accent_color']};
+                        border-radius: 8px;
+                        padding: 8px;
+                        font-weight: 700;
+                        font-size: 16px;
+                        font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+                    }}
+                    QPushButton:hover {{
+                        background: {theme['button_hover']};
+                        color: {theme['button_text']};
+                        border-color: {theme['accent_color']};
+                    }}
+                    QPushButton:pressed {{
+                        background: {theme['button_hover']};
+                        border-color: {theme['accent_color']};
+                        color: {theme['button_text']};
+                    }}
+                """)
             
     def update_particle_effects(self):
         """更新粒子效果显示"""
@@ -2896,22 +2951,29 @@ class CommandManager(QMainWindow):
             if cmd_type == 'screen_record' or '录屏' in cmd_name:
                 cmd_id = f"{cmd_name}_{cmd_content}"  # 使用命令名和内容作为唯一标识
                 
-                try:
-                    # 尝试解析JSON格式的录屏命令
-                    screen_commands = json.loads(cmd_content)
-                    start_cmd = screen_commands.get('start', '')
-                    stop_cmd = screen_commands.get('stop', '')
-                    export_cmd = screen_commands.get('export', '')
-                except (json.JSONDecodeError, TypeError):
-                    # 如果不是JSON格式，使用原有逻辑（兼容旧版本）
-                    start_cmd = cmd_content.replace('stop', 'start') if 'stop' in cmd_content else cmd_content
-                    stop_cmd = cmd_content.replace('start', 'stop') if 'start' in cmd_content else cmd_content + ' stop'
-                    export_cmd = ''
-                
                 if cmd_id not in self.command_states:
-                    # 第一次点击：开始录屏
-                    self.command_states[cmd_id] = 'recording'
-                    self.log_message(f"🔴 开始录屏: {cmd_name}", info=True)
+                    # 第一次点击：开始录屏，生成时间戳并保存
+                    import datetime
+                    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                    
+                    # 保存时间戳到命令状态中，确保整个录屏会话使用相同的时间戳
+                    self.command_states[cmd_id] = {'status': 'recording', 'timestamp': timestamp}
+                    
+                    try:
+                        # 尝试解析JSON格式的录屏命令
+                        screen_commands = json.loads(cmd_content)
+                        start_cmd = screen_commands.get('start', '')
+                        
+                        # 替换时间戳占位符
+                        start_cmd = start_cmd.replace('{timestamp}', timestamp)
+                    except (json.JSONDecodeError, TypeError):
+                        # 如果不是JSON格式，使用原有逻辑（兼容旧版本）
+                        start_cmd = cmd_content.replace('stop', 'start') if 'stop' in cmd_content else cmd_content
+                        
+                        # 替换时间戳占位符
+                        start_cmd = start_cmd.replace('{timestamp}', timestamp)
+                    
+                    self.log_message(f"🔴 开始录屏: {cmd_name} (时间戳: {timestamp})", info=True)
                     
                     # 更新按钮显示状态
                     self.update_recording_button_state(cmd, True)
@@ -2921,9 +2983,30 @@ class CommandManager(QMainWindow):
                         self.run_command_with_progress(start_cmd, f"开始录屏 {cmd_name}")
                     return
                 else:
-                    # 第二次点击：结束录屏并导出
+                    # 第二次点击：结束录屏并导出，使用保存的时间戳
+                    saved_state = self.command_states[cmd_id]
+                    timestamp = saved_state['timestamp']  # 使用开始录屏时保存的时间戳
                     del self.command_states[cmd_id]
-                    self.log_message(f"⏹️ 结束录屏并导出: {cmd_name}", info=True)
+                    
+                    try:
+                        # 尝试解析JSON格式的录屏命令
+                        screen_commands = json.loads(cmd_content)
+                        stop_cmd = screen_commands.get('stop', '')
+                        export_cmd = screen_commands.get('export', '')
+                        
+                        # 替换时间戳占位符
+                        stop_cmd = stop_cmd.replace('{timestamp}', timestamp)
+                        export_cmd = export_cmd.replace('{timestamp}', timestamp)
+                    except (json.JSONDecodeError, TypeError):
+                        # 如果不是JSON格式，使用原有逻辑（兼容旧版本）
+                        stop_cmd = cmd_content.replace('start', 'stop') if 'start' in cmd_content else cmd_content + ' stop'
+                        export_cmd = ''
+                        
+                        # 替换时间戳占位符
+                        stop_cmd = stop_cmd.replace('{timestamp}', timestamp)
+                        export_cmd = export_cmd.replace('{timestamp}', timestamp)
+                    
+                    self.log_message(f"⏹️ 结束录屏并导出: {cmd_name} (时间戳: {timestamp})", info=True)
                     
                     # 更新按钮显示状态
                     self.update_recording_button_state(cmd, False)
@@ -3044,7 +3127,16 @@ class CommandManager(QMainWindow):
             self.progress_animation.setDuration(500)
             self.progress_animation.start()
             
-            # 执行命令
+            # 检查是否包含多个命令（分号分隔）
+            if ';' in cmd_content and cmd_type == 'normal':
+                # 分割命令并依次执行
+                commands = [cmd.strip() for cmd in cmd_content.split(';') if cmd.strip()]
+                if len(commands) > 1:
+                    self.log_message(f"检测到 {len(commands)} 个命令，将依次执行", info=True)
+                    self.execute_multiple_commands(commands, cmd_name)
+                    return
+            
+            # 执行单个命令
             QTimer.singleShot(300, lambda: self.run_command(cmd_content))
         
         except Exception as e:
@@ -3053,6 +3145,46 @@ class CommandManager(QMainWindow):
             self.log_message(error_msg, error=True)
             if hasattr(self, 'progress_bar'):
                 self.progress_bar.setVisible(False)
+    
+    def execute_multiple_commands(self, commands, cmd_name):
+        """依次执行多个命令"""
+        try:
+            self.command_queue = commands.copy()
+            self.current_command_index = 0
+            self.total_commands = len(commands)
+            self.base_cmd_name = cmd_name
+            
+            # 开始执行第一个命令
+            self.execute_next_command()
+            
+        except Exception as e:
+            error_msg = f"执行多命令失败: {cmd_name} - {e}"
+            logging.error(error_msg, exc_info=True)
+            self.log_message(error_msg, error=True)
+            if hasattr(self, 'progress_bar'):
+                self.progress_bar.setVisible(False)
+    
+    def execute_next_command(self):
+        """执行队列中的下一个命令"""
+        if self.current_command_index < len(self.command_queue):
+            current_cmd = self.command_queue[self.current_command_index]
+            self.current_command_index += 1
+            
+            self.log_message(f"执行命令 {self.current_command_index}/{self.total_commands}: {current_cmd}", info=True)
+            
+            # 更新进度条显示
+            progress_percent = int((self.current_command_index / self.total_commands) * 100)
+            self.progress_bar.setFormat(f"执行命令 {self.current_command_index}/{self.total_commands} - {self.base_cmd_name} {progress_percent}%")
+            
+            # 执行当前命令
+            self.run_command(current_cmd)
+        else:
+            # 所有命令执行完成
+            self.log_message(f"所有命令执行完成: {self.base_cmd_name}", success=True)
+            self.command_queue = None
+            self.current_command_index = 0
+            # 调用完成清理方法
+            self.finish_all_commands(True)
     
     def run_command(self, command):
         try:
@@ -3251,6 +3383,30 @@ class CommandManager(QMainWindow):
     def command_finished(self, success, message):
         # 命令执行完成
         self.progress_animation.stop()
+        
+        # 检查是否在多命令执行模式
+        if hasattr(self, 'command_queue') and self.command_queue is not None:
+            # 多命令执行模式
+            if success:
+                self.log_message(f"命令 {self.current_command_index}/{self.total_commands} 执行成功", success=True)
+                # 继续执行下一个命令
+                QTimer.singleShot(500, self.execute_next_command)
+            else:
+                # 命令失败，询问是否继续
+                self.log_message(f"命令 {self.current_command_index}/{self.total_commands} 执行失败: {message}", error=True)
+                reply = QMessageBox.question(self, "命令执行失败", 
+                                           f"命令 {self.current_command_index}/{self.total_commands} 执行失败。\n\n是否继续执行剩余命令？",
+                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+                if reply == QMessageBox.Yes:
+                    QTimer.singleShot(500, self.execute_next_command)
+                else:
+                    # 用户选择停止，清理多命令状态
+                    self.command_queue = None
+                    self.current_command_index = 0
+                    self.finish_all_commands(False)
+            return
+        
+        # 单命令执行模式
         self.progress_animation = QPropertyAnimation(self.progress_bar, b"value")
         self.progress_animation.setStartValue(self.progress_bar.value())
         self.progress_animation.setEndValue(100 if success else 0)
@@ -3283,6 +3439,34 @@ class CommandManager(QMainWindow):
                 enable_anim.setEndValue(QRect(current_geo.x(), current_geo.y(), current_geo.width(), current_geo.height()))
                 enable_anim.setEasingCurve(QEasingCurve.OutBack)
                 enable_anim.start()
+        
+        # 播放提示音
+        if success:
+            QApplication.beep()
+            
+        # 3秒后隐藏进度条
+        QTimer.singleShot(3000, lambda: self.progress_bar.setVisible(False))
+    
+    def finish_all_commands(self, success):
+        """完成所有命令执行的清理工作"""
+        self.progress_animation = QPropertyAnimation(self.progress_bar, b"value")
+        self.progress_animation.setStartValue(self.progress_bar.value())
+        self.progress_animation.setEndValue(100 if success else 0)
+        self.progress_animation.setDuration(500)
+        self.progress_animation.setEasingCurve(QEasingCurve.OutQuad)
+        self.progress_animation.start()
+        
+        if success:
+            self.progress_bar.setFormat("所有命令执行完成 100%")
+        else:
+            self.progress_bar.setFormat("命令执行中断")
+        
+        # 重新启用所有命令按钮
+        for i in range(self.commands_grid.count()):
+            widget = self.commands_grid.itemAt(i).widget()
+            if widget:
+                widget.setEnabled(True)
+                self.apply_button_tooltip_style(widget)
         
         # 播放提示音
         if success:
@@ -3518,6 +3702,21 @@ class CommandManager(QMainWindow):
                 QMessageBox.warning(self, "警告", "日志文件夹不存在")
         except Exception as e:
             error_msg = f"打开日志文件夹失败: {e}"
+            logging.error(error_msg, exc_info=True)
+            QMessageBox.critical(self, "错误", error_msg)
+    
+    def open_current_folder(self):
+        """打开当前命令管理器文件夹"""
+        try:
+            current_dir = APP_BASE_DIR
+            if os.path.exists(current_dir):
+                os.startfile(current_dir)
+                logging.info(f"已打开当前文件夹: {current_dir}")
+                self.log_message(f"已打开文件夹: {current_dir}", info=True)
+            else:
+                QMessageBox.warning(self, "警告", "当前文件夹不存在")
+        except Exception as e:
+            error_msg = f"打开当前文件夹失败: {e}"
             logging.error(error_msg, exc_info=True)
             QMessageBox.critical(self, "错误", error_msg)
 

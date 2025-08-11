@@ -68,8 +68,20 @@
         "icon": "normal"
     },
     {
-        "name": "文件夹快速打开",
-        "command": "explorer {local_path}",
+        "name": "appdata打开",
+        "command": "explorer %APPDATA%",
+        "type": "normal",
+        "icon": "normal"
+    },
+    {
+        "name": "aa",
+        "command": "hdc file recv a b;\nhdc file recv c d;\nhdc file recv g f",
+        "type": "normal",
+        "icon": "normal"
+    },
+    {
+        "name": "dir",
+        "command": "dir ; dir",
         "type": "normal",
         "icon": "normal"
     }
