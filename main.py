@@ -1377,10 +1377,9 @@ class CommandManager(QMainWindow):
         title_widget.setFixedHeight(120)  # 继续增加高度确保上下边距一致
         title_widget.setStyleSheet("""
             QWidget {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #1a1a2e, stop:1 #16213e);
-                border: 1px solid #00ffff;
-                border-radius: 6px;
+                background: transparent;
+                border: none;
+                border-radius: 0;
                 padding: 4px;
             }
         """)
