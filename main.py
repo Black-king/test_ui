@@ -755,6 +755,305 @@ class ParticleEffect(QWidget):
             self.particles.clear()
             self.init_particles()
 
+# 音乐播放器对话框
+class MusicPlayerDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.is_playing = False
+        self.current_song = "No Song Selected"
+        self.current_time = "00:00"
+        self.total_time = "00:00"
+        self.volume = 50
+        self.progress_value = 0
+        
+        self.init_ui()
+        self.apply_theme()
+        
+        # 模拟播放定时器
+        self.play_timer = QTimer()
+        self.play_timer.timeout.connect(self.update_progress)
+    
+    def init_ui(self):
+        self.setWindowTitle("🎵 Cyber Music Player")
+        self.setFixedSize(400, 500)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        
+        # 设置窗口图标
+        if self.parent_window:
+            icon_path = os.path.join(APP_BASE_DIR, 'icons', 'music-player.svg')
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QIcon(icon_path))
+        
+        # 主布局
+        layout = QVBoxLayout(self)
+        layout.setSpacing(20)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # 标题
+        title = QLabel("🎵 CYBER MUSIC PLAYER")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("""
+            font-size: 20px;
+            font-weight: bold;
+            color: #00ffff;
+            margin-bottom: 10px;
+            padding: 10px;
+            border: 2px solid #00ffff;
+            border-radius: 10px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #1a1a2e, stop:1 #16213e);
+        """)
+        layout.addWidget(title)
+        
+        # 专辑封面区域
+        cover_frame = QFrame()
+        cover_frame.setFixedSize(200, 200)
+        cover_frame.setStyleSheet("""
+            QFrame {
+                border: 3px solid #00ffff;
+                border-radius: 15px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #0a0a0a, stop:0.5 #1a1a2e, stop:1 #16213e);
+            }
+        """)
+        
+        cover_layout = QVBoxLayout(cover_frame)
+        cover_icon = QLabel("🎼")
+        cover_icon.setAlignment(Qt.AlignCenter)
+        cover_icon.setStyleSheet("font-size: 80px; color: #00ffff;")
+        cover_layout.addWidget(cover_icon)
+        
+        # 居中显示专辑封面
+        cover_container = QHBoxLayout()
+        cover_container.addStretch()
+        cover_container.addWidget(cover_frame)
+        cover_container.addStretch()
+        layout.addLayout(cover_container)
+        
+        # 歌曲信息
+        self.song_label = QLabel(self.current_song)
+        self.song_label.setAlignment(Qt.AlignCenter)
+        self.song_label.setStyleSheet("""
+            font-size: 16px;
+            font-weight: bold;
+            color: #ffffff;
+            margin: 10px 0;
+        """)
+        layout.addWidget(self.song_label)
+        
+        # 进度条
+        progress_container = QVBoxLayout()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(self.progress_value)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid #00ffff;
+                border-radius: 8px;
+                background-color: #1a1a2e;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #00ffff, stop:1 #ff6b6b);
+                border-radius: 6px;
+            }
+        """)
+        
+        # 时间标签
+        time_layout = QHBoxLayout()
+        self.current_time_label = QLabel(self.current_time)
+        self.total_time_label = QLabel(self.total_time)
+        self.current_time_label.setStyleSheet("color: #00ffff; font-size: 12px;")
+        self.total_time_label.setStyleSheet("color: #00ffff; font-size: 12px;")
+        
+        time_layout.addWidget(self.current_time_label)
+        time_layout.addStretch()
+        time_layout.addWidget(self.total_time_label)
+        
+        progress_container.addWidget(self.progress_bar)
+        progress_container.addLayout(time_layout)
+        layout.addLayout(progress_container)
+        
+        # 控制按钮
+        controls_layout = QHBoxLayout()
+        controls_layout.setSpacing(15)
+        
+        # 上一首按钮
+        prev_btn = QPushButton("⏮")
+        prev_btn.setFixedSize(50, 50)
+        prev_btn.clicked.connect(self.prev_song)
+        
+        # 播放/暂停按钮
+        self.play_btn = QPushButton("▶")
+        self.play_btn.setFixedSize(60, 60)
+        self.play_btn.clicked.connect(self.toggle_play)
+        
+        # 下一首按钮
+        next_btn = QPushButton("⏭")
+        next_btn.setFixedSize(50, 50)
+        next_btn.clicked.connect(self.next_song)
+        
+        # 设置按钮样式
+        button_style = """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #1a1a2e, stop:1 #16213e);
+                color: #00ffff;
+                border: 2px solid #00ffff;
+                border-radius: 25px;
+                font-size: 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #00ffff, stop:1 #ff6b6b);
+                color: #000000;
+            }
+            QPushButton:pressed {
+                background: #ff6b6b;
+            }
+        """
+        
+        prev_btn.setStyleSheet(button_style)
+        self.play_btn.setStyleSheet(button_style + "border-radius: 30px;")
+        next_btn.setStyleSheet(button_style)
+        
+        controls_layout.addStretch()
+        controls_layout.addWidget(prev_btn)
+        controls_layout.addWidget(self.play_btn)
+        controls_layout.addWidget(next_btn)
+        controls_layout.addStretch()
+        
+        layout.addLayout(controls_layout)
+        
+        # 音量控制
+        volume_layout = QHBoxLayout()
+        volume_label = QLabel("🔊")
+        volume_label.setStyleSheet("color: #00ffff; font-size: 16px;")
+        
+        self.volume_slider = QProgressBar()
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(self.volume)
+        self.volume_slider.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid #00ffff;
+                border-radius: 8px;
+                background-color: #1a1a2e;
+                height: 15px;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #00ff00, stop:1 #ffff00);
+                border-radius: 6px;
+            }
+        """)
+        
+        volume_layout.addWidget(volume_label)
+        volume_layout.addWidget(self.volume_slider)
+        layout.addLayout(volume_layout)
+        
+        # 返回按钮
+        back_btn = QPushButton("🔙 返回主界面")
+        back_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #1e3a8a, stop:1 #1e40af);
+                color: #60a5fa;
+                border: 2px solid #60a5fa;
+                padding: 10px 20px;
+                border-radius: 8px;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #3b82f6, stop:1 #2563eb);
+                border-color: #93c5fd;
+                color: #ffffff;
+            }
+            QPushButton:pressed {
+                background: #60a5fa;
+                color: #000000;
+            }
+        """)
+        back_btn.clicked.connect(self.close)
+        layout.addWidget(back_btn)
+    
+    def apply_theme(self):
+        """应用主题样式"""
+        self.setStyleSheet("""
+            QDialog {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #0a0a0a, stop:0.5 #1a1a2e, stop:1 #16213e);
+                color: #00ffff;
+            }
+        """)
+    
+    def toggle_play(self):
+        """切换播放/暂停状态"""
+        self.is_playing = not self.is_playing
+        if self.is_playing:
+            self.play_btn.setText("⏸")
+            self.play_timer.start(1000)  # 每秒更新一次
+            if self.parent_window:
+                self.parent_window.log_message("🎵 开始播放音乐", success=True)
+        else:
+            self.play_btn.setText("▶")
+            self.play_timer.stop()
+            if self.parent_window:
+                self.parent_window.log_message("⏸ 音乐已暂停", info=True)
+    
+    def prev_song(self):
+        """上一首歌"""
+        songs = ["Cyber Dreams", "Neon Nights", "Digital Love", "Future Bass", "Synthwave"]
+        current_index = songs.index(self.current_song) if self.current_song in songs else 0
+        self.current_song = songs[(current_index - 1) % len(songs)]
+        self.song_label.setText(self.current_song)
+        self.progress_value = 0
+        self.progress_bar.setValue(self.progress_value)
+        if self.parent_window:
+            self.parent_window.log_message(f"⏮ 切换到: {self.current_song}", info=True)
+    
+    def next_song(self):
+        """下一首歌"""
+        songs = ["Cyber Dreams", "Neon Nights", "Digital Love", "Future Bass", "Synthwave"]
+        current_index = songs.index(self.current_song) if self.current_song in songs else 0
+        self.current_song = songs[(current_index + 1) % len(songs)]
+        self.song_label.setText(self.current_song)
+        self.progress_value = 0
+        self.progress_bar.setValue(self.progress_value)
+        if self.parent_window:
+            self.parent_window.log_message(f"⏭ 切换到: {self.current_song}", info=True)
+    
+    def update_progress(self):
+        """更新播放进度"""
+        if self.is_playing:
+            self.progress_value += 2  # 每秒增加2%
+            if self.progress_value >= 100:
+                self.progress_value = 0
+                self.next_song()  # 自动播放下一首
+            
+            self.progress_bar.setValue(self.progress_value)
+            
+            # 更新时间显示
+            current_seconds = int(self.progress_value * 3.6)  # 假设总时长3分钟
+            total_seconds = 180
+            
+            self.current_time = f"{current_seconds // 60:02d}:{current_seconds % 60:02d}"
+            self.total_time = f"{total_seconds // 60:02d}:{total_seconds % 60:02d}"
+            
+            self.current_time_label.setText(self.current_time)
+            self.total_time_label.setText(self.total_time)
+    
+    def closeEvent(self, event):
+        """关闭事件处理"""
+        self.play_timer.stop()
+        if self.parent_window:
+            self.parent_window.log_message("🔙 音乐播放器已关闭", info=True)
+        event.accept()
+
 # 命令执行线程
 class CommandThread(QThread):
     output_signal = pyqtSignal(str)
@@ -869,6 +1168,10 @@ class CommandManager(QMainWindow):
             self.current_theme = 'light'  # 默认主题
             self.command_states = {}  # 命令状态记录字典，用于支持录屏等状态切换命令
             self._edit_dialog_open = False  # 防止重复打开编辑对话框
+            
+            # 音乐播放器相关
+            self.ready_click_count = 0  # READY按钮点击计数
+            self.music_player_dialog = None
             
             logging.info("初始化主题...")
             self.init_themes()
@@ -1186,6 +1489,93 @@ class CommandManager(QMainWindow):
         self.poem_timer.start(3 * 60 * 1000)  # 3分钟
         
         title_layout.addWidget(self.time_label)
+        
+        # 缩放控制按钮组
+        scale_widget = QWidget()
+        scale_layout = QHBoxLayout(scale_widget)
+        scale_layout.setContentsMargins(0, 0, 0, 0)
+        scale_layout.setSpacing(5)
+        
+        # 初始化缩放比例
+        self.scale_factor = 1.0
+        
+        # 缩小按钮
+        self.scale_down_btn = QPushButton("－")
+        self.scale_down_btn.setFixedSize(32, 22)
+        self.scale_down_btn.setToolTip("缩小界面 (Ctrl+-)")
+        self.scale_down_btn.setCursor(Qt.PointingHandCursor)
+        self.scale_down_btn.clicked.connect(self.scale_down)
+        
+        # 重置按钮
+        self.scale_reset_btn = QPushButton("100%")
+        self.scale_reset_btn.setFixedSize(42, 22)
+        self.scale_reset_btn.setToolTip("重置界面大小 (Ctrl+0)")
+        self.scale_reset_btn.setCursor(Qt.PointingHandCursor)
+        self.scale_reset_btn.clicked.connect(self.scale_reset)
+        
+        # 放大按钮
+        self.scale_up_btn = QPushButton("＋")
+        self.scale_up_btn.setFixedSize(32, 22)
+        self.scale_up_btn.setToolTip("放大界面 (Ctrl++)")
+        self.scale_up_btn.setCursor(Qt.PointingHandCursor)
+        self.scale_up_btn.clicked.connect(self.scale_up)
+        
+        # 禁用焦点以去除焦点效果
+        self.scale_down_btn.setFocusPolicy(Qt.NoFocus)
+        self.scale_reset_btn.setFocusPolicy(Qt.NoFocus)
+        self.scale_up_btn.setFocusPolicy(Qt.NoFocus)
+        
+        # 设置按钮为扁平样式以去除大块区域效果
+        self.scale_down_btn.setFlat(True)
+        self.scale_reset_btn.setFlat(True)
+        self.scale_up_btn.setFlat(True)
+        
+        # 设置缩放按钮样式 - 高对比度，清晰可见，去掉焦点红色背景
+        theme = self.themes[self.current_theme]
+        scale_button_style = f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {theme['accent_color']};
+                border: 2px solid {theme['accent_color']};
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 16px;
+                font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+                padding: 2px;
+                margin: 1px;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255, 255, 255, 0.1);
+                color: {theme['accent_color']};
+                border-color: {theme['accent_color']};
+            }}
+            QPushButton:pressed {{
+                background-color: rgba(255, 255, 255, 0.2);
+                color: {theme['accent_color']};
+                border-color: {theme['button_text']};
+            }}
+            QPushButton:focus {{
+                outline: none;
+                background-color: transparent;
+                border: 2px solid {theme['accent_color']};
+            }}
+        """
+        
+        self.scale_down_btn.setStyleSheet(scale_button_style)
+        self.scale_reset_btn.setStyleSheet(scale_button_style)
+        self.scale_up_btn.setStyleSheet(scale_button_style)
+        
+        scale_layout.addWidget(self.scale_down_btn)
+        scale_layout.addWidget(self.scale_reset_btn)
+        scale_layout.addWidget(self.scale_up_btn)
+        
+        title_layout.addWidget(scale_widget)
+        
+        # 添加快捷键
+        QShortcut(QKeySequence("Ctrl+-"), self, activated=self.scale_down)
+        QShortcut(QKeySequence("Ctrl+="), self, activated=self.scale_up)
+        QShortcut(QKeySequence("Ctrl+0"), self, activated=self.scale_reset)
+        
         main_layout.addWidget(title_widget)
         
         # 创建分割器
@@ -1500,6 +1890,9 @@ class CommandManager(QMainWindow):
             border: 1px solid #00ff00;
             font-family: 'Arial', 'Microsoft YaHei', sans-serif;
         """)
+        # 为READY标签添加点击事件
+        self.terminal_status.mousePressEvent = self.ready_clicked
+        self.terminal_status.setCursor(Qt.PointingHandCursor)  # 设置鼠标悬停时显示手型光标
         
         terminal_header_layout.addWidget(terminal_label)
         terminal_header_layout.addWidget(self.terminal_status, alignment=Qt.AlignCenter)
@@ -1553,6 +1946,8 @@ class CommandManager(QMainWindow):
         # 终端输出区域
         self.terminal = QTextEdit()
         self.terminal.setReadOnly(True)
+        # 添加点击事件处理
+        self.terminal.mousePressEvent = self.terminal_clicked
         # 初始样式将由apply_theme函数设置
         self.terminal.setStyleSheet("""
             QTextEdit {
@@ -2154,6 +2549,9 @@ class CommandManager(QMainWindow):
         
         # 更新粒子效果显示
         self.update_particle_effects()
+        
+        # 更新缩放按钮样式
+        self.update_scale_buttons_style()
 
         # 更新主题菜单当前项文本
         if self.theme_button and self.theme_button.menu():
@@ -3550,6 +3948,120 @@ class CommandManager(QMainWindow):
         # 刷新回收站数据
         self.load_deleted_commands()
     
+    def ready_clicked(self, event):
+        """READY标签点击事件处理"""
+        self.ready_click_count += 1
+        self.log_message(f"🎵 READY点击次数: {self.ready_click_count}/5", info=True)
+        
+        if self.ready_click_count >= 5:
+            # 点击5次后打开音乐播放器
+            self.ready_click_count = 0  # 重置计数
+            self.show_music_player()
+        
+        # 调用原始的鼠标点击事件
+        QLabel.mousePressEvent(self.terminal_status, event)
+    
+    def terminal_clicked(self, event):
+        """终端区域点击事件处理"""
+        # 调用原始的鼠标点击事件
+        QTextEdit.mousePressEvent(self.terminal, event)
+    
+    def keyPressEvent(self, event):
+        """键盘事件处理"""
+        # 调用父类的键盘事件处理
+        super().keyPressEvent(event)
+    
+    def show_music_player(self):
+        """显示音乐播放器"""
+        if self.music_player_dialog is None:
+            self.music_player_dialog = MusicPlayerDialog(self)
+        
+        self.log_message("🎵 音乐播放器已启动！", success=True)
+        self.music_player_dialog.show()
+        self.music_player_dialog.raise_()
+        self.music_player_dialog.activateWindow()
+    
+    def scale_down(self):
+        """缩小界面"""
+        if self.scale_factor > 0.5:
+            self.scale_factor -= 0.1
+            self.apply_scale()
+    
+    def scale_up(self):
+        """放大界面"""
+        if self.scale_factor < 2.0:
+            self.scale_factor += 0.1
+            self.apply_scale()
+    
+    def scale_reset(self):
+        """重置界面大小"""
+        self.scale_factor = 1.0
+        self.apply_scale()
+    
+    def apply_scale(self):
+        """应用缩放比例"""
+        # 更新重置按钮显示的百分比
+        percentage = int(self.scale_factor * 100)
+        self.scale_reset_btn.setText(f"{percentage}%")
+        
+        # 获取当前窗口大小
+        current_size = self.size()
+        
+        # 计算新的窗口大小
+        base_width = 1400  # 基础宽度
+        base_height = 900  # 基础高度
+        
+        new_width = int(base_width * self.scale_factor)
+        new_height = int(base_height * self.scale_factor)
+        
+        # 设置新的窗口大小
+        self.resize(new_width, new_height)
+        
+        # 居中显示窗口
+        screen = QApplication.primaryScreen().geometry()
+        x = (screen.width() - new_width) // 2
+        y = (screen.height() - new_height) // 2
+        self.move(x, y)
+    
+    def update_scale_buttons_style(self):
+        """更新缩放按钮样式以适配当前主题"""
+        if not hasattr(self, 'scale_down_btn'):
+            return
+            
+        theme = self.themes[self.current_theme]
+        scale_button_style = f"""
+            QPushButton {{
+                background-color: {theme['window_bg']};
+                color: {theme['accent_color']};
+                border: 2px solid {theme['accent_color']};
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 16px;
+                font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+                padding: 2px;
+                margin: 1px;
+            }}
+            QPushButton:hover {{
+                background-color: {theme['accent_color']};
+                color: {theme['window_bg']};
+                border-color: {theme['accent_color']};
+            }}
+            QPushButton:pressed {{
+                background-color: {theme['button_text']};
+                color: {theme['window_bg']};
+                border-color: {theme['button_text']};
+            }}
+            QPushButton:focus {{
+                outline: none;
+                background-color: {theme['window_bg']};
+                border: 2px solid {theme['accent_color']};
+            }}
+        """
+        
+        self.scale_down_btn.setStyleSheet(scale_button_style)
+        self.scale_reset_btn.setStyleSheet(scale_button_style)
+        self.scale_up_btn.setStyleSheet(scale_button_style)
+
     def show_log_viewer(self):
         """显示日志查看器"""
         try:
@@ -5322,3 +5834,6 @@ if __name__ == "__main__":
             logging.error(f"清理心跳文件失败: {e}")
         
         logging.info("=== 应用程序结束 ===")
+
+
+# 音乐播放器对话框
