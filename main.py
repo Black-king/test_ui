@@ -1016,6 +1016,93 @@ class PlaylistLoaderThread(QThread):
             self.error_occurred.emit(f"加载歌单时发生错误: {e}")
 
 # 音乐播放器对话框
+class AudioDownloadThread(QThread):
+    """音频下载线程，避免UI卡顿"""
+    download_finished = pyqtSignal(str, str)  # 信号：临时文件路径, 歌曲信息
+    download_failed = pyqtSignal(str)  # 信号：错误信息
+    download_progress = pyqtSignal(int, int)  # 信号：已下载字节数, 总字节数
+    
+    def __init__(self, song_url, song_info):
+        super().__init__()
+        self.song_url = song_url
+        self.song_info = song_info
+        self.is_cancelled = False
+    
+    def cancel(self):
+        """取消下载"""
+        self.is_cancelled = True
+    
+    def run(self):
+        """在后台线程中下载音频文件"""
+        import tempfile
+        import os
+        
+        temp_file = None
+        try:
+            if self.is_cancelled:
+                return
+                
+            response = REQUESTS_SESSION.get(self.song_url, stream=True, timeout=10)
+            if response.status_code == 200:
+                content_type = response.headers.get('Content-Type', '')
+                
+                # 根据内容类型确定文件扩展名
+                if 'audio/mpeg' in content_type or 'audio/mp3' in content_type:
+                    suffix = '.mp3'
+                elif 'audio/wav' in content_type:
+                    suffix = '.wav'
+                elif 'audio/ogg' in content_type:
+                    suffix = '.ogg'
+                else:
+                    suffix = '.mp3'  # 默认
+                
+                # 创建临时文件
+                temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+                
+                # 获取文件总大小
+                total_size = int(response.headers.get('Content-Length', 0))
+                
+                # 流式下载到临时文件
+                chunk_size = 32768  # 32KB chunks
+                downloaded_size = 0
+                
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if self.is_cancelled:
+                        temp_file.close()
+                        try:
+                            os.unlink(temp_file.name)
+                        except:
+                            pass
+                        return
+                    
+                    if chunk:
+                        temp_file.write(chunk)
+                        downloaded_size += len(chunk)
+                        
+                        # 发送进度信号
+                        if total_size > 0:
+                            self.download_progress.emit(downloaded_size, total_size)
+                
+                temp_file.close()
+                
+                # 验证文件是否下载完整
+                if downloaded_size < 1024:  # 小于1KB可能是错误文件
+                    raise Exception(f"音频文件太小({downloaded_size}字节)，可能下载失败")
+                
+                # 发送下载完成信号
+                self.download_finished.emit(temp_file.name, self.song_info)
+            else:
+                self.download_failed.emit(f"无法加载歌曲，HTTP状态码: {response.status_code}")
+                
+        except Exception as e:
+            if temp_file:
+                temp_file.close()
+                try:
+                    os.unlink(temp_file.name)
+                except:
+                    pass
+            self.download_failed.emit(f"下载音频文件时出错: {e}")
+
 class MusicPlayerDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1037,6 +1124,19 @@ class MusicPlayerDialog(QDialog):
         # 歌单缓存机制
         self.playlist_cache = {}  # 缓存已加载的歌单 {playlist_id: songs_list}
         
+        # 音乐文件缓存机制
+        self.music_cache = {}  # 缓存已下载的音乐文件 {song_url: temp_file_path}
+        self.cache_file = os.path.join(APP_BASE_DIR, 'music_cache.json')  # 缓存文件路径
+        
+        # 加载缓存
+        self.load_music_cache()
+        
+        # 音频下载线程管理
+        self.download_thread = None
+        
+        # 播放模式：0=顺序播放，1=单曲循环
+        self.play_mode = 0  # 默认顺序播放
+        
         # 初始化音频系统
         self.init_audio()
         
@@ -1052,7 +1152,145 @@ class MusicPlayerDialog(QDialog):
         
         # 注册清理函数
         import atexit
-        atexit.register(self.cleanup_temp_files)
+        atexit.register(self.cleanup_all_files)
+        
+        # 连接下载线程信号
+        self.connect_download_signals()
+    
+    def connect_download_signals(self):
+        """连接下载线程的信号"""
+        # 这个方法会在每次创建新的下载线程时被调用
+        pass
+    
+    def play_cached_file(self, file_path, song_info):
+        """播放缓存的音频文件"""
+        try:
+            pygame.mixer.music.load(file_path)
+            pygame.mixer.music.play(loops=0)  # 只播放一次，不循环
+            pygame.mixer.music.set_volume(self.volume / 100.0)
+            
+            if self.parent_window:
+                self.parent_window.log_message(f"🎵 缓存音频播放已开始: {song_info}")
+            
+            # 设置当前播放文件
+            self.current_temp_file = file_path
+            
+            # 启动播放定时器
+            if hasattr(self, 'play_timer'):
+                self.play_timer.start(500)  # 每500ms更新一次进度
+            
+        except pygame.error as e:
+            if self.parent_window:
+                self.parent_window.log_message(f"缓存文件播放错误: {e}", error=True)
+            # 如果缓存文件播放失败，重新下载
+            if self.songs and 0 <= self.current_index < len(self.songs):
+                song = self.songs[self.current_index]
+                song_url = song['url']
+                # 从缓存中移除失效文件
+                if song_url in self.music_cache:
+                    del self.music_cache[song_url]
+                # 重新下载
+                self.play_new_song()
+    
+    def on_download_finished(self, temp_file_path, song_info):
+        """音频下载完成的处理"""
+        try:
+            if self.parent_window:
+                self.parent_window.log_message(f"音频下载完成: {song_info}")
+            
+            # 将下载的文件添加到缓存
+            if self.songs and 0 <= self.current_index < len(self.songs):
+                song = self.songs[self.current_index]
+                song_url = song['url']
+                self.music_cache[song_url] = temp_file_path
+                if self.parent_window:
+                    self.parent_window.log_message(f"💾 音频文件已缓存: {song['name']} - {song['artist']}", info=True)
+                # 立即保存缓存到文件
+                self.save_music_cache()
+            
+            # 使用临时文件播放
+            pygame_success = False
+            try:
+                pygame.mixer.music.load(temp_file_path)
+                pygame.mixer.music.play(loops=0)  # 只播放一次，不循环
+                pygame.mixer.music.set_volume(self.volume / 100.0)
+                pygame_success = True
+            except pygame.error as e:
+                if self.parent_window:
+                    self.parent_window.log_message(f"Pygame播放错误: {e}，尝试重新初始化音频系统", error=True)
+                try:
+                    # 尝试重新初始化音频系统
+                    self.init_audio()
+                    pygame.mixer.music.load(temp_file_path)
+                    pygame.mixer.music.play(loops=0)
+                    pygame.mixer.music.set_volume(self.volume / 100.0)
+                    pygame_success = True
+                except Exception as e2:
+                    if self.parent_window:
+                        self.parent_window.log_message(f"Pygame重新初始化后仍然失败: {e2}，切换到系统播放器", error=True)
+                    # 清理临时文件
+                    try:
+                        os.unlink(temp_file_path)
+                    except:
+                        pass
+                    # 使用系统播放器作为备用方案
+                    if self.songs and 0 <= self.current_index < len(self.songs):
+                        song = self.songs[self.current_index]
+                        return self.play_with_system_player(song['url'])
+                    return
+            
+            if pygame_success:
+                if self.parent_window:
+                    self.parent_window.log_message("音频播放已开始（后台下载完成）")
+                
+                # 保存临时文件路径以便后续清理
+                self.current_temp_file = temp_file_path
+                self.temp_files.append(temp_file_path)
+                
+                # 启动播放定时器
+                if hasattr(self, 'play_timer'):
+                    self.play_timer.start(500)  # 每500ms更新一次进度
+            else:
+                if self.parent_window:
+                    self.parent_window.log_message("Pygame播放失败，切换到系统播放器", error=True)
+                # 清理临时文件
+                try:
+                    os.unlink(temp_file_path)
+                except:
+                    pass
+                # 使用系统播放器作为备用方案
+                if self.songs and 0 <= self.current_index < len(self.songs):
+                    song = self.songs[self.current_index]
+                    return self.play_with_system_player(song['url'])
+                    
+        except Exception as e:
+            if self.parent_window:
+                self.parent_window.log_message(f"播放音频时出错: {e}", error=True)
+            # 清理临时文件
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
+    
+    def on_download_failed(self, error_message):
+        """音频下载失败的处理"""
+        if self.parent_window:
+            self.parent_window.log_message(error_message, error=True)
+        
+        # 尝试使用系统播放器作为备用方案
+        if self.songs and 0 <= self.current_index < len(self.songs):
+            song = self.songs[self.current_index]
+            if self.parent_window:
+                self.parent_window.log_message("尝试使用系统播放器作为备用方案", info=True)
+            self.play_with_system_player(song['url'])
+    
+    def on_download_progress(self, downloaded, total):
+        """音频下载进度更新"""
+        if total > 0:
+            progress = int((downloaded / total) * 100)
+            # 只在50%和100%时输出日志，进一步减少日志量
+            if self.parent_window and progress in [50, 100]:
+                self.parent_window.log_message(f"下载进度: {progress}% ({downloaded/1024:.1f}KB/{total/1024:.1f}KB)")
     
     def init_audio(self):
         """初始化音频系统"""
@@ -1201,12 +1439,19 @@ class MusicPlayerDialog(QDialog):
         self.next_btn.setFixedSize(55, 55)
         self.next_btn.clicked.connect(self.next_song)
         
+        # 播放模式切换按钮
+        self.mode_btn = QPushButton("▶▶")
+        self.mode_btn.setFixedSize(45, 45)
+        self.mode_btn.clicked.connect(self.toggle_play_mode)
+        self.mode_btn.setToolTip("顺序播放")
+        
         # 样式将在apply_theme中设置
         
         controls_layout.addStretch()
         controls_layout.addWidget(self.prev_btn)
         controls_layout.addWidget(self.play_btn)
         controls_layout.addWidget(self.next_btn)
+        controls_layout.addWidget(self.mode_btn)
         controls_layout.addStretch()
         
         layout.addLayout(controls_layout)
@@ -1387,6 +1632,8 @@ class MusicPlayerDialog(QDialog):
                     self.current_index = 0
                     self.update_song_info()
                     self.populate_song_list()
+                    # 设置歌曲列表的初始选中状态
+                    self.song_list.setCurrentRow(0)
                     if self.is_playing:
                         self.play_new_song()
                 else:
@@ -1653,6 +1900,10 @@ class MusicPlayerDialog(QDialog):
         if hasattr(self, 'next_btn'):
             self.next_btn.setStyleSheet(control_button_style)
         
+        if hasattr(self, 'mode_btn'):
+            mode_button_style = control_button_style.replace("border-radius: 27px;", "border-radius: 22px;").replace("font-size: 20px;", "font-size: 16px;")
+            self.mode_btn.setStyleSheet(mode_button_style)
+        
         if hasattr(self, 'back_btn'):
             self.back_btn.setStyleSheet(f"""
                 QPushButton {{
@@ -1744,15 +1995,24 @@ class MusicPlayerDialog(QDialog):
     def prev_song(self):
         """上一首歌"""
         if self.songs:
+            # 记录当前播放状态
+            was_playing = self.is_playing
             # 先停止当前播放并清理临时文件
             self.stop_playback()
             self.current_index = (self.current_index - 1) % len(self.songs)
             self.update_song_info()
+            # 更新歌曲列表的选中状态
+            self.song_list.setCurrentRow(self.current_index)
             self.progress_value = 0
             self.progress_bar.setValue(self.progress_value)
-            if self.is_playing:
+            # 如果之前在播放，切换后直接播放新歌曲
+            if was_playing:
+                self.is_playing = True
+                self.play_btn.setText("⏸")
                 self.play_new_song()
         else:
+            # 记录当前播放状态
+            was_playing = self.is_playing
             songs = ["Cyber Dreams", "Neon Nights", "Digital Love", "Future Bass", "Synthwave"]
             # 从当前显示的歌曲名中提取歌曲名（去掉歌手信息）
             current_song_name = self.current_song.split(' - ')[0] if ' - ' in self.current_song else self.current_song
@@ -1762,7 +2022,10 @@ class MusicPlayerDialog(QDialog):
             self.song_label.setText(self.current_song)
             self.progress_value = 0
             self.progress_bar.setValue(self.progress_value)
-            if self.is_playing:
+            # 如果之前在播放，切换后直接播放新歌曲
+            if was_playing:
+                self.is_playing = True
+                self.play_btn.setText("⏸")
                 self.play_new_song()
         if self.parent_window:
             # 切换到上一首（静默）
@@ -1771,15 +2034,24 @@ class MusicPlayerDialog(QDialog):
     def next_song(self):
         """下一首歌"""
         if self.songs:
+            # 记录当前播放状态
+            was_playing = self.is_playing
             # 先停止当前播放并清理临时文件
             self.stop_playback()
             self.current_index = (self.current_index + 1) % len(self.songs)
             self.update_song_info()
+            # 更新歌曲列表的选中状态
+            self.song_list.setCurrentRow(self.current_index)
             self.progress_value = 0
             self.progress_bar.setValue(self.progress_value)
-            if self.is_playing:
+            # 如果之前在播放，切换后直接播放新歌曲
+            if was_playing:
+                self.is_playing = True
+                self.play_btn.setText("⏸")
                 self.play_new_song()
         else:
+            # 记录当前播放状态
+            was_playing = self.is_playing
             songs = ["Cyber Dreams", "Neon Nights", "Digital Love", "Future Bass", "Synthwave"]
             # 从当前显示的歌曲名中提取歌曲名（去掉歌手信息）
             current_song_name = self.current_song.split(' - ')[0] if ' - ' in self.current_song else self.current_song
@@ -1789,11 +2061,30 @@ class MusicPlayerDialog(QDialog):
             self.song_label.setText(self.current_song)
             self.progress_value = 0
             self.progress_bar.setValue(self.progress_value)
-            if self.is_playing:
+            # 如果之前在播放，切换后直接播放新歌曲
+            if was_playing:
+                self.is_playing = True
+                self.play_btn.setText("⏸")
                 self.play_new_song()
         if self.parent_window:
             # 切换到下一首（静默）
             pass
+    
+    def toggle_play_mode(self):
+        """切换播放模式"""
+        self.play_mode = (self.play_mode + 1) % 2
+        if self.play_mode == 0:
+            # 顺序播放
+            self.mode_btn.setText("▶▶")
+            self.mode_btn.setToolTip("顺序播放")
+            if self.parent_window:
+                self.parent_window.log_message("▶▶ 切换到顺序播放模式", info=True)
+        else:
+            # 单曲循环
+            self.mode_btn.setText("🔄")
+            self.mode_btn.setToolTip("单曲循环")
+            if self.parent_window:
+                self.parent_window.log_message("🔄 切换到单曲循环模式", info=True)
     
     def play_with_system_player(self, audio_url):
         """使用系统播放器播放音频（备用方案）"""
@@ -1842,174 +2133,152 @@ class MusicPlayerDialog(QDialog):
                 self.parent_window.log_message(f"❌ 系统播放器错误: {e}", error=True)
             return False
     
+    def normalize_music_url(self, url):
+        """标准化音乐URL，移除动态参数以便缓存匹配"""
+        try:
+            from urllib.parse import urlparse
+            import re
+            parsed = urlparse(url)
+            
+            # 网易云音乐URL格式: http://m701.music.126.net/时间戳/哈希值/路径/文件名.mp3
+            # 我们需要移除时间戳和哈希值部分，只保留域名和最后的文件路径
+            path = parsed.path
+            
+            # 使用正则表达式匹配网易云音乐URL模式
+            # 匹配模式: /时间戳/哈希值/实际路径
+            match = re.match(r'^/\d+/[a-f0-9]+/(.+)$', path)
+            if match:
+                # 提取实际的文件路径部分
+                actual_path = '/' + match.group(1)
+                base_url = f"{parsed.scheme}://{parsed.netloc}{actual_path}"
+            else:
+                # 如果不匹配预期模式，则只移除查询参数
+                base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            
+            return base_url
+        except Exception as e:
+            if self.parent_window:
+                self.parent_window.log_message(f"URL标准化失败: {e}", error=True)
+            return url
+    
+    def find_cached_file_by_base_url(self, target_url):
+        """通过基础URL查找缓存文件"""
+        target_base = self.normalize_music_url(target_url)
+        
+        for cached_url, cached_file in self.music_cache.items():
+            cached_base = self.normalize_music_url(cached_url)
+            if target_base == cached_base:
+                return cached_url, cached_file
+        return None, None
+    
     def play_new_song(self):
-        """播放新歌曲"""
+        """播放新歌曲（使用后台下载线程避免UI卡顿）"""
         if not self.songs:
             if self.parent_window:
                 self.parent_window.log_message("没有可播放的歌曲", error=True)
             return
         
         song = self.songs[self.current_index]
+        song_url = song['url']
         
         # 如果pygame不可用或音频系统未初始化，使用系统播放器
         if not self.audio_initialized or not PYGAME_AVAILABLE:
             if self.parent_window:
                 self.parent_window.log_message("pygame不可用，尝试使用系统播放器", info=True)
-            return self.play_with_system_player(song['url'])
+            return self.play_with_system_player(song_url)
+        
         try:
             # 先停止当前播放
             self.stop_playback()
-            # 清理旧的临时文件
-            self.cleanup_temp_files()
-            if self.songs:
-                song = self.songs[self.current_index]
+            
+            # 检查缓存中是否已有该歌曲
+            if self.parent_window:
+                self.parent_window.log_message(f"🔍 检查缓存，当前缓存数量: {len(self.music_cache)}")
+                self.parent_window.log_message(f"🎵 查找歌曲URL: {song_url[:50]}...")
+                self.parent_window.log_message(f"🎵 标准化URL: {self.normalize_music_url(song_url)[:50]}...")
+            
+            # 首先尝试精确匹配
+            cached_file = None
+            matched_url = None
+            
+            if song_url in self.music_cache:
+                cached_file = self.music_cache[song_url]
+                matched_url = song_url
                 if self.parent_window:
-                    self.parent_window.log_message(f"正在播放: {song['name']} - {song['url'][:50]}...")
-                
-                # 使用流式下载和临时文件来改善播放体验
-                import tempfile
-                import os
-                
-                temp_file = None
-                try:
-                    response = REQUESTS_SESSION.get(song['url'], stream=True, timeout=10)
-                    if response.status_code == 200:
-                        content_type = response.headers.get('Content-Type', '')
-                        if self.parent_window:
-                            self.parent_window.log_message(f"音频文件类型: {content_type}")
-                        
-                        # 根据内容类型确定文件扩展名
-                        if 'audio/mpeg' in content_type or 'audio/mp3' in content_type:
-                            suffix = '.mp3'
-                        elif 'audio/wav' in content_type:
-                            suffix = '.wav'
-                        elif 'audio/ogg' in content_type:
-                            suffix = '.ogg'
-                        else:
-                            suffix = '.mp3'  # 默认
-                        
-                        # 创建临时文件
-                        temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-                        
-                        # 流式下载到临时文件，使用较大的块大小以减少I/O操作
-                        chunk_size = 32768  # 32KB chunks
-                        total_size = 0
-                        for chunk in response.iter_content(chunk_size=chunk_size):
-                            if chunk:
-                                temp_file.write(chunk)
-                                total_size += len(chunk)
-                        
-                        temp_file.close()
-                        
-                        if self.parent_window:
-                            self.parent_window.log_message(f"音频文件下载完成，大小: {total_size/1024:.1f}KB")
-                        
-                        # 验证文件是否下载完整
-                        if total_size < 1024:  # 小于1KB可能是错误文件
-                            raise Exception(f"音频文件太小({total_size}字节)，可能下载失败")
-                        
-                        # 使用临时文件播放，添加错误处理
-                        pygame_success = False
-                        try:
-                            pygame.mixer.music.load(temp_file.name)
-                            pygame.mixer.music.play(loops=0)  # 只播放一次，不循环
-                            pygame.mixer.music.set_volume(self.volume / 100.0)
-                            pygame_success = True
-                        except pygame.error as e:
-                            if self.parent_window:
-                                self.parent_window.log_message(f"Pygame播放错误: {e}，尝试重新初始化音频系统", error=True)
-                            try:
-                                # 尝试重新初始化音频系统
-                                self.init_audio()
-                                pygame.mixer.music.load(temp_file.name)
-                                pygame.mixer.music.play(loops=0)  # 只播放一次，不循环
-                                pygame.mixer.music.set_volume(self.volume / 100.0)
-                                pygame_success = True
-                            except Exception as e2:
-                                if self.parent_window:
-                                    self.parent_window.log_message(f"Pygame重新初始化后仍然失败: {e2}，切换到系统播放器", error=True)
-                                # 清理临时文件
-                                try:
-                                    os.unlink(temp_file.name)
-                                except:
-                                    pass
-                                # 使用系统播放器作为备用方案
-                                return self.play_with_system_player(song['url'])
-                        
-                        if not pygame_success:
-                            if self.parent_window:
-                                self.parent_window.log_message("Pygame播放失败，切换到系统播放器", error=True)
-                            # 清理临时文件
-                            try:
-                                os.unlink(temp_file.name)
-                            except:
-                                pass
-                            # 使用系统播放器作为备用方案
-                            return self.play_with_system_player(song['url'])
-                        
-                        if self.parent_window:
-                            self.parent_window.log_message("音频播放已开始（流式加载）")
-                        
-                        # 保存临时文件路径以便后续清理
-                        self.current_temp_file = temp_file.name
-                        self.temp_files.append(temp_file.name)
-                        
-                    else:
-                        if self.parent_window:
-                            self.parent_window.log_message(f"无法加载歌曲，HTTP状态码: {response.status_code}", error=True)
-                        if temp_file:
-                            temp_file.close()
-                            try:
-                                os.unlink(temp_file.name)
-                            except:
-                                pass
-                                
-                except Exception as download_error:
-                    if self.parent_window:
-                        self.parent_window.log_message(f"下载音频文件时出错: {download_error}", error=True)
-                    if temp_file:
-                        temp_file.close()
-                        try:
-                            os.unlink(temp_file.name)
-                        except:
-                            pass
+                    self.parent_window.log_message(f"✅ 精确匹配找到缓存: {cached_file}")
             else:
-                song_frequencies = {
-                    "Cyber Dreams": 440,
-                    "Neon Nights": 523,
-                    "Digital Love": 587,
-                    "Future Bass": 659,
-                    "Synthwave": 698
-                }
-                frequency = song_frequencies.get(self.current_song, 440)
-                import numpy as np
-                import tempfile
-                import wave
-                sample_rate = 22050
-                duration = 0.8
-                t = np.linspace(0, duration, int(sample_rate * duration), False)
-                wave_data = (np.sin(frequency * 2 * np.pi * t) * 0.3 + 
-                             np.sin(frequency * 1.5 * 2 * np.pi * t) * 0.1)
-                wave_data = (wave_data * 32767).astype(np.int16)
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-                    temp_filename = temp_file.name
-                with wave.open(temp_filename, 'w') as wav_file:
-                    wav_file.setnchannels(1)
-                    wav_file.setsampwidth(2)
-                    wav_file.setframerate(sample_rate)
-                    wav_file.writeframes(wave_data.tobytes())
-                pygame.mixer.music.load(temp_filename)
-                pygame.mixer.music.play(loops=0)
-                pygame.mixer.music.set_volume(self.volume / 100.0)
+                # 尝试基础URL匹配
+                matched_url, cached_file = self.find_cached_file_by_base_url(song_url)
+                if cached_file:
+                    if self.parent_window:
+                        self.parent_window.log_message(f"✅ 基础URL匹配找到缓存: {cached_file}")
+                        self.parent_window.log_message(f"匹配的缓存URL: {matched_url[:50]}...")
+            
+            if cached_file:
+                # 验证缓存文件是否仍然存在
+                if os.path.exists(cached_file):
+                    if self.parent_window:
+                        self.parent_window.log_message(f"⚡ 从缓存播放: {song['name']} - {song['artist']}", success=True)
+                    # 直接播放缓存的文件
+                    self.play_cached_file(cached_file, f"{song['name']} - {song['artist']}")
+                    return
+                else:
+                    # 缓存文件不存在，从缓存中移除
+                    if matched_url in self.music_cache:
+                        del self.music_cache[matched_url]
+                    if self.parent_window:
+                        self.parent_window.log_message("❌ 缓存文件已失效，重新下载", info=True)
+            else:
+                if self.parent_window:
+                    self.parent_window.log_message(f"❌ 缓存中未找到该歌曲，需要下载")
+                    # 显示缓存中的前几个URL用于调试
+                    cache_urls = list(self.music_cache.keys())[:3]
+                    for i, url in enumerate(cache_urls):
+                        self.parent_window.log_message(f"缓存URL {i+1}: {self.normalize_music_url(url)[:50]}...")
+            
+            # 清理旧的临时文件（但保留缓存文件）
+            self.cleanup_temp_files()
+            
+            # 取消之前的下载线程（如果存在）
+            if self.download_thread and self.download_thread.isRunning():
+                self.download_thread.cancel()
+                self.download_thread.wait(1000)  # 等待最多1秒
+            
+            if self.parent_window:
+                self.parent_window.log_message(f"开始下载: {song['name']} - {song['artist']}")
+            
+            # 创建新的下载线程
+            song_info = f"{song['name']} - {song['artist']}"
+            self.download_thread = AudioDownloadThread(song_url, song_info)
+            
+            # 连接信号
+            self.download_thread.download_finished.connect(self.on_download_finished)
+            self.download_thread.download_failed.connect(self.on_download_failed)
+            self.download_thread.download_progress.connect(self.on_download_progress)
+            
+            # 启动下载线程
+            self.download_thread.start()
+            
+            if self.parent_window:
+                self.parent_window.log_message("音频下载已在后台开始，UI不会卡顿")
+                
         except Exception as e:
             if self.parent_window:
-                self.parent_window.log_message(f"播放错误: {e}", error=True)
+                self.parent_window.log_message(f"启动音频下载时出错: {e}", error=True)
+            # 使用系统播放器作为备用方案
+            return self.play_with_system_player(song_url)
     
     def cleanup_temp_files(self):
-        """清理临时文件"""
+        """清理临时文件（但保留缓存的音乐文件）"""
         import os
         cleaned_files = []
+        cached_files = set(self.music_cache.values())  # 获取所有缓存文件路径
+        
         for temp_file in self.temp_files[:]:
+            # 跳过缓存的音乐文件
+            if temp_file in cached_files:
+                continue
+                
             try:
                 if os.path.exists(temp_file):
                     os.unlink(temp_file)
@@ -2025,6 +2294,82 @@ class MusicPlayerDialog(QDialog):
         for cleaned_file in cleaned_files:
             if cleaned_file in self.temp_files:
                 self.temp_files.remove(cleaned_file)
+    
+    def load_music_cache(self):
+        """从文件加载音乐缓存"""
+        try:
+            if self.parent_window:
+                self.parent_window.log_message(f"🔍 开始加载音乐缓存，缓存文件: {self.cache_file}")
+            
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                    cache_data = json.load(f)
+                
+                if self.parent_window:
+                    self.parent_window.log_message(f"📁 缓存文件包含 {len(cache_data)} 个条目")
+                
+                # 验证缓存文件是否仍然存在
+                valid_cache = {}
+                for song_url, file_path in cache_data.items():
+                    if os.path.exists(file_path):
+                        valid_cache[song_url] = file_path
+                        if self.parent_window:
+                            self.parent_window.log_message(f"✅ 有效缓存: {file_path}")
+                    else:
+                        if self.parent_window:
+                            self.parent_window.log_message(f"❌ 缓存文件已失效: {file_path}")
+                
+                self.music_cache = valid_cache
+                if self.parent_window:
+                    self.parent_window.log_message(f"💾 已加载 {len(valid_cache)} 个有效音乐缓存", success=True)
+            else:
+                if self.parent_window:
+                    self.parent_window.log_message("📂 缓存文件不存在，将创建新缓存")
+        except Exception as e:
+            if self.parent_window:
+                self.parent_window.log_message(f"加载音乐缓存失败: {e}", error=True)
+            self.music_cache = {}
+    
+    def save_music_cache(self):
+        """保存音乐缓存到文件"""
+        try:
+            # 只保存仍然存在的缓存文件
+            valid_cache = {}
+            for song_url, file_path in self.music_cache.items():
+                if os.path.exists(file_path):
+                    valid_cache[song_url] = file_path
+            
+            with open(self.cache_file, 'w', encoding='utf-8') as f:
+                json.dump(valid_cache, f, ensure_ascii=False, indent=2)
+            
+            if self.parent_window and valid_cache:
+                self.parent_window.log_message(f"已保存 {len(valid_cache)} 个音乐缓存")
+        except Exception as e:
+            if self.parent_window:
+                self.parent_window.log_message(f"保存音乐缓存失败: {e}", error=True)
+    
+    def cleanup_all_files(self):
+        """清理临时文件，保留缓存文件（程序退出时调用）"""
+        import os
+        
+        # 先保存缓存
+        self.save_music_cache()
+        
+        # 只清理非缓存的临时文件
+        cached_files = set(self.music_cache.values())
+        for temp_file in self.temp_files[:]:
+            try:
+                if os.path.exists(temp_file) and temp_file not in cached_files:
+                    os.unlink(temp_file)
+                    if self.parent_window:
+                        self.parent_window.log_message(f"已清理临时文件: {temp_file}")
+            except Exception:
+                pass  # 程序退出时不输出错误信息
+        
+        # 清空临时文件列表，但保留缓存
+        self.temp_files.clear()
+        if self.parent_window and self.music_cache:
+            self.parent_window.log_message(f"已保留 {len(self.music_cache)} 个音乐缓存文件供下次使用")
     
     def stop_playback(self):
         """停止播放"""
@@ -2107,13 +2452,29 @@ class MusicPlayerDialog(QDialog):
                 # 没有音频系统，使用模拟进度
                 self.progress_value += 100.0 / 180.0
             
-            # 确保进度不超过100%，播放完毕后停止
+            # 确保进度不超过100%，播放完毕后根据播放模式处理
             if self.progress_value >= 100:
-                self.is_playing = False
-                self.play_btn.setText("▶")
-                self.play_timer.stop()
-                self.progress_value = 0
-                self.progress_bar.setValue(0)
+                if self.play_mode == 1:  # 单曲循环
+                    # 重新开始播放当前歌曲
+                    self.progress_value = 0
+                    self.progress_bar.setValue(0)
+                    if self.parent_window:
+                        self.parent_window.log_message("🔄 单曲循环：重新播放当前歌曲", info=True)
+                    # 重新播放当前歌曲
+                    self.play_new_song()
+                else:  # 顺序播放
+                    # 自动播放下一首
+                    if self.songs and len(self.songs) > 1:
+                        if self.parent_window:
+                            self.parent_window.log_message("▶▶ 顺序播放：自动播放下一首", info=True)
+                        self.next_song()
+                    else:
+                        # 没有更多歌曲，停止播放
+                        self.is_playing = False
+                        self.play_btn.setText("▶")
+                        self.play_timer.stop()
+                        self.progress_value = 0
+                        self.progress_bar.setValue(0)
                 return
             
             self.progress_bar.setValue(int(self.progress_value))
