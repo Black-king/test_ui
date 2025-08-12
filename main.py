@@ -35,6 +35,41 @@ import re
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# 创建全局requests session，支持代理和SSL配置
+def create_requests_session():
+    """创建配置好的requests session，支持代理和SSL设置"""
+    session = requests.Session()
+    
+    # 禁用SSL验证
+    session.verify = False
+    
+    # 尝试从环境变量获取代理设置
+    import os
+    http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
+    https_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
+    
+    if http_proxy or https_proxy:
+        proxies = {}
+        if http_proxy:
+            proxies['http'] = http_proxy
+        if https_proxy:
+            proxies['https'] = https_proxy
+        session.proxies.update(proxies)
+        print(f"检测到代理设置: {proxies}")
+    
+    # 设置默认超时
+    session.timeout = 10
+    
+    # 设置User-Agent
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    })
+    
+    return session
+
+# 创建全局session实例
+REQUESTS_SESSION = create_requests_session()
+
 # 尝试导入pygame用于音频播放
 try:
     import pygame
@@ -796,8 +831,8 @@ class PlaylistLoaderThread(QThread):
             playlist_id = match.group(1)
             url = f'https://163api.qijieya.cn/playlist/detail?id={playlist_id}&limit=1000'
             
-            # 网络请求 (禁用SSL验证以解决公司网络证书问题)
-            response = requests.get(url, timeout=10, verify=False)
+            # 网络请求 (使用全局session，支持代理和SSL配置)
+            response = REQUESTS_SESSION.get(url, timeout=10)
             response.raise_for_status()
             
             data = response.json()
@@ -826,7 +861,7 @@ class PlaylistLoaderThread(QThread):
                     
                     try:
                         batch_url = f'https://163api.qijieya.cn/song/detail?ids={ids_str}'
-                        batch_response = requests.get(batch_url, timeout=10, verify=False)
+                        batch_response = REQUESTS_SESSION.get(batch_url, timeout=10)
                         batch_data = batch_response.json()
                         
                         if batch_data.get('code') == 200 and batch_data.get('songs'):
@@ -854,7 +889,7 @@ class PlaylistLoaderThread(QThread):
                 try:
                     # 使用批量API获取URL，比逐个请求快很多
                     batch_url_api = f'https://163api.qijieya.cn/song/url?id={",".join(initial_track_ids)}'
-                    batch_response = requests.get(batch_url_api, timeout=10, verify=False)
+                    batch_response = REQUESTS_SESSION.get(batch_url_api, timeout=10)
                     batch_data = batch_response.json()
                     
                     if batch_data.get('code') == 200 and batch_data.get('data'):
@@ -881,7 +916,7 @@ class PlaylistLoaderThread(QThread):
                         try:
                             song_id = track['id']
                             song_url_api = f'https://163api.qijieya.cn/song/url?id={song_id}'
-                            song_response = requests.get(song_url_api, timeout=3, verify=False)
+                            song_response = REQUESTS_SESSION.get(song_url_api, timeout=3)
                             song_data = song_response.json()
                             
                             if song_data.get('code') == 200 and song_data.get('data'):
@@ -917,7 +952,7 @@ class PlaylistLoaderThread(QThread):
                     try:
                         # 批量获取URL
                         batch_url_api = f'https://163api.qijieya.cn/song/url?id={",".join(batch_track_ids)}'
-                        batch_response = requests.get(batch_url_api, timeout=10, verify=False)
+                        batch_response = REQUESTS_SESSION.get(batch_url_api, timeout=10)
                         batch_data = batch_response.json()
                         
                         if batch_data.get('code') == 200 and batch_data.get('data'):
@@ -947,7 +982,7 @@ class PlaylistLoaderThread(QThread):
                             try:
                                 song_id = track['id']
                                 song_url_api = f'https://163api.qijieya.cn/song/url?id={song_id}'
-                                song_response = requests.get(song_url_api, timeout=3, verify=False)
+                                song_response = REQUESTS_SESSION.get(song_url_api, timeout=3)
                                 song_data = song_response.json()
                                 
                                 if song_data.get('code') == 200 and song_data.get('data'):
@@ -1270,7 +1305,7 @@ class MusicPlayerDialog(QDialog):
                 url = f'https://163api.qijieya.cn/playlist/detail?id={playlist_id}&limit=1000'
                 
                 # 添加超时和错误处理
-                response = requests.get(url, timeout=10, verify=False)
+                response = REQUESTS_SESSION.get(url, timeout=10)
                 response.raise_for_status()  # 检查HTTP状态码
                 
                 data = response.json()
@@ -1300,7 +1335,7 @@ class MusicPlayerDialog(QDialog):
                             
                             try:
                                 batch_url = f'https://163api.qijieya.cn/song/detail?ids={ids_str}'
-                                batch_response = requests.get(batch_url, timeout=10, verify=False)
+                                batch_response = REQUESTS_SESSION.get(batch_url, timeout=10)
                                 batch_data = batch_response.json()
                                 
                                 if batch_data.get('code') == 200 and batch_data.get('songs'):
@@ -1327,7 +1362,7 @@ class MusicPlayerDialog(QDialog):
                         # 使用API获取真实的音频URL
                         try:
                             song_url_api = f'https://163api.qijieya.cn/song/url?id={song_id}'
-                            song_response = requests.get(song_url_api, timeout=5, verify=False)
+                            song_response = REQUESTS_SESSION.get(song_url_api, timeout=5)
                             song_data = song_response.json()
                             
                             if song_data.get('code') == 200 and song_data.get('data'):
@@ -1772,7 +1807,7 @@ class MusicPlayerDialog(QDialog):
                 self.parent_window.log_message("🔄 使用系统播放器播放音频...", info=True)
             
             # 下载音频文件到临时目录
-            response = requests.get(audio_url, stream=True, timeout=10, verify=False)
+            response = REQUESTS_SESSION.get(audio_url, stream=True, timeout=10)
             if response.status_code == 200:
                 temp_file = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
                 for chunk in response.iter_content(chunk_size=32768):
@@ -1837,7 +1872,7 @@ class MusicPlayerDialog(QDialog):
                 
                 temp_file = None
                 try:
-                    response = requests.get(song['url'], stream=True, timeout=10, verify=False)
+                    response = REQUESTS_SESSION.get(song['url'], stream=True, timeout=10)
                     if response.status_code == 200:
                         content_type = response.headers.get('Content-Type', '')
                         if self.parent_window:
