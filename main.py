@@ -31,6 +31,10 @@ import requests
 import io
 import re
 
+# 禁用SSL警告（解决公司网络证书问题）
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # 尝试导入pygame用于音频播放
 try:
     import pygame
@@ -792,8 +796,8 @@ class PlaylistLoaderThread(QThread):
             playlist_id = match.group(1)
             url = f'https://163api.qijieya.cn/playlist/detail?id={playlist_id}&limit=1000'
             
-            # 网络请求
-            response = requests.get(url, timeout=10)
+            # 网络请求 (禁用SSL验证以解决公司网络证书问题)
+            response = requests.get(url, timeout=10, verify=False)
             response.raise_for_status()
             
             data = response.json()
@@ -822,7 +826,7 @@ class PlaylistLoaderThread(QThread):
                     
                     try:
                         batch_url = f'https://163api.qijieya.cn/song/detail?ids={ids_str}'
-                        batch_response = requests.get(batch_url, timeout=10)
+                        batch_response = requests.get(batch_url, timeout=10, verify=False)
                         batch_data = batch_response.json()
                         
                         if batch_data.get('code') == 200 and batch_data.get('songs'):
@@ -850,7 +854,7 @@ class PlaylistLoaderThread(QThread):
                 try:
                     # 使用批量API获取URL，比逐个请求快很多
                     batch_url_api = f'https://163api.qijieya.cn/song/url?id={",".join(initial_track_ids)}'
-                    batch_response = requests.get(batch_url_api, timeout=10)
+                    batch_response = requests.get(batch_url_api, timeout=10, verify=False)
                     batch_data = batch_response.json()
                     
                     if batch_data.get('code') == 200 and batch_data.get('data'):
@@ -877,7 +881,7 @@ class PlaylistLoaderThread(QThread):
                         try:
                             song_id = track['id']
                             song_url_api = f'https://163api.qijieya.cn/song/url?id={song_id}'
-                            song_response = requests.get(song_url_api, timeout=3)
+                            song_response = requests.get(song_url_api, timeout=3, verify=False)
                             song_data = song_response.json()
                             
                             if song_data.get('code') == 200 and song_data.get('data'):
@@ -913,7 +917,7 @@ class PlaylistLoaderThread(QThread):
                     try:
                         # 批量获取URL
                         batch_url_api = f'https://163api.qijieya.cn/song/url?id={",".join(batch_track_ids)}'
-                        batch_response = requests.get(batch_url_api, timeout=10)
+                        batch_response = requests.get(batch_url_api, timeout=10, verify=False)
                         batch_data = batch_response.json()
                         
                         if batch_data.get('code') == 200 and batch_data.get('data'):
@@ -943,7 +947,7 @@ class PlaylistLoaderThread(QThread):
                             try:
                                 song_id = track['id']
                                 song_url_api = f'https://163api.qijieya.cn/song/url?id={song_id}'
-                                song_response = requests.get(song_url_api, timeout=3)
+                                song_response = requests.get(song_url_api, timeout=3, verify=False)
                                 song_data = song_response.json()
                                 
                                 if song_data.get('code') == 200 and song_data.get('data'):
@@ -1266,7 +1270,7 @@ class MusicPlayerDialog(QDialog):
                 url = f'https://163api.qijieya.cn/playlist/detail?id={playlist_id}&limit=1000'
                 
                 # 添加超时和错误处理
-                response = requests.get(url, timeout=10)
+                response = requests.get(url, timeout=10, verify=False)
                 response.raise_for_status()  # 检查HTTP状态码
                 
                 data = response.json()
@@ -1296,7 +1300,7 @@ class MusicPlayerDialog(QDialog):
                             
                             try:
                                 batch_url = f'https://163api.qijieya.cn/song/detail?ids={ids_str}'
-                                batch_response = requests.get(batch_url, timeout=10)
+                                batch_response = requests.get(batch_url, timeout=10, verify=False)
                                 batch_data = batch_response.json()
                                 
                                 if batch_data.get('code') == 200 and batch_data.get('songs'):
@@ -1323,7 +1327,7 @@ class MusicPlayerDialog(QDialog):
                         # 使用API获取真实的音频URL
                         try:
                             song_url_api = f'https://163api.qijieya.cn/song/url?id={song_id}'
-                            song_response = requests.get(song_url_api, timeout=5)
+                            song_response = requests.get(song_url_api, timeout=5, verify=False)
                             song_data = song_response.json()
                             
                             if song_data.get('code') == 200 and song_data.get('data'):
@@ -1768,7 +1772,7 @@ class MusicPlayerDialog(QDialog):
                 self.parent_window.log_message("🔄 使用系统播放器播放音频...", info=True)
             
             # 下载音频文件到临时目录
-            response = requests.get(audio_url, stream=True, timeout=10)
+            response = requests.get(audio_url, stream=True, timeout=10, verify=False)
             if response.status_code == 200:
                 temp_file = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
                 for chunk in response.iter_content(chunk_size=32768):
@@ -1833,7 +1837,7 @@ class MusicPlayerDialog(QDialog):
                 
                 temp_file = None
                 try:
-                    response = requests.get(song['url'], stream=True, timeout=10)
+                    response = requests.get(song['url'], stream=True, timeout=10, verify=False)
                     if response.status_code == 200:
                         content_type = response.headers.get('Content-Type', '')
                         if self.parent_window:
@@ -3092,10 +3096,12 @@ class CommandManager(QMainWindow):
         self.update_particle_effects_size()
     
     def resizeEvent(self, event):
-        """主窗口大小变化时更新粒子效果"""
+        """主窗口大小变化时更新粒子效果和按钮布局"""
         super().resizeEvent(event)
         # 延迟更新粒子效果，确保面板大小已经更新
         QTimer.singleShot(50, self.update_particle_effects_size)
+        # 延迟更新按钮布局，实现响应式设计
+        QTimer.singleShot(100, self.update_command_buttons)
     
     def update_particle_effects_size(self):
         """更新粒子效果大小"""
@@ -4153,14 +4159,33 @@ class CommandManager(QMainWindow):
         # 更新命令计数
         self.commands_count.setText(f"({len(self.commands)} 个命令)")
         
+        # 动态计算列数，实现响应式布局
+        left_panel = self.findChild(QWidget, "leftPanel")
+        if left_panel:
+            panel_width = left_panel.width()
+            # 按钮宽度75px + 间距10px + 边距，计算能容纳的列数
+            button_width = 75 + 10  # 按钮宽度 + 间距
+            available_width = panel_width - 40  # 减去左右边距
+            # 更严格的列数计算，确保在较小宽度时减少列数
+            if available_width < 150:  # 很小的宽度，使用1列
+                columns = 1
+            elif available_width < 300:  # 中等宽度，使用2列
+                columns = 2
+            else:  # 较大宽度，使用3列
+                columns = 3
+            # print(f"响应式布局调试: 面板宽度={panel_width}, 可用宽度={available_width}, 计算列数={columns}")
+        else:
+            columns = 3  # 默认3列
+            print("响应式布局调试: 未找到左侧面板，使用默认3列")
+        
         # 添加命令按钮（按过滤结果）
         commands_to_show = getattr(self, 'filtered_commands', None) or self.commands
         for i, cmd in enumerate(commands_to_show):
-            row, col = divmod(i, 3)
+            row, col = divmod(i, columns)
             
             # 创建按钮
             btn = QPushButton(cmd['name'])
-            btn.setMinimumSize(110, 80)  # 调整按钮尺寸以显示更多
+            btn.setMinimumSize(75, 50)  # 进一步减小按钮尺寸，适应极小界面
             # 稳定优先：不使用不透明度效果，直接显示
             
             # 为按钮添加符号图标
@@ -4186,12 +4211,12 @@ class CommandManager(QMainWindow):
                 color: {theme['button_text']};
                 border: 3px solid {theme['button_border']};
                 border-radius: 12px;
-                padding: 8px 6px;
-                font-weight: 700;
-                font-size: 14px;
+                padding: 6px 4px;
+                font-weight: 600;
+                font-size: 12px;
                 font-family: 'Arial', 'Microsoft YaHei', sans-serif;
                 text-align: center;
-                min-height: 65px;
+                min-height: 40px;
             }}
             QPushButton:hover {{
                 background: {'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 ' + theme['button_hover'] + ', stop:1 rgba(0, 255, 255, 0.3))' if self.current_theme == 'cyber' else theme['button_hover']};
@@ -4703,7 +4728,7 @@ class CommandManager(QMainWindow):
                                 font-size: 14px;
                                 font-family: 'Arial', 'Microsoft YaHei', sans-serif;
                                 text-align: center;
-                                min-height: 65px;
+                                min-height: 50px;
                             }}
                             QPushButton:hover {{
                                 background: {theme['button_hover']};
@@ -4726,7 +4751,7 @@ class CommandManager(QMainWindow):
                                 font-size: 14px;
                                 font-family: 'Arial', 'Microsoft YaHei', sans-serif;
                                 text-align: center;
-                                min-height: 65px;
+                                min-height: 50px;
                             }}
                             QPushButton:hover {{
                                 background: {theme['button_hover']};
