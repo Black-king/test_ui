@@ -900,6 +900,7 @@ class PlaylistLoaderThread(QThread):
                             song_id = str(track['id'])
                             if song_id in url_map and url_map[song_id]:
                                 songs.append({
+                                    'id': song_id,
                                     'name': track['name'],
                                     'url': url_map[song_id],
                                     'artist': track['ar'][0]['name'] if track.get('ar') else 'Unknown'
@@ -923,6 +924,7 @@ class PlaylistLoaderThread(QThread):
                                 song_url = song_data['data'][0].get('url')
                                 if song_url:
                                     songs.append({
+                                        'id': str(track['id']),
                                         'name': track['name'],
                                         'url': song_url,
                                         'artist': track['ar'][0]['name'] if track.get('ar') else 'Unknown'
@@ -964,6 +966,7 @@ class PlaylistLoaderThread(QThread):
                                 song_id = str(track['id'])
                                 if song_id in url_map and url_map[song_id]:
                                     batch_songs.append({
+                                        'id': song_id,
                                         'name': track['name'],
                                         'url': url_map[song_id],
                                         'artist': track['ar'][0]['name'] if track.get('ar') else 'Unknown'
@@ -989,6 +992,7 @@ class PlaylistLoaderThread(QThread):
                                     song_url = song_data['data'][0].get('url')
                                     if song_url:
                                         songs.append({
+                                            'id': str(track['id']),
                                             'name': track['name'],
                                             'url': song_url,
                                             'artist': track['ar'][0]['name'] if track.get('ar') else 'Unknown'
@@ -1016,6 +1020,100 @@ class PlaylistLoaderThread(QThread):
             self.error_occurred.emit(f"加载歌单时发生错误: {e}")
 
 # 音乐播放器对话框
+class UrlRefreshThread(QThread):
+    """URL刷新线程，用于重新获取过期的歌曲URL"""
+    url_refreshed = pyqtSignal(int, str)  # 信号：歌曲索引, 新URL
+    refresh_failed = pyqtSignal(str)  # 信号：错误信息
+    
+    def __init__(self, song, song_index, parent=None):
+        super().__init__()
+        self.song = song
+        self.song_index = song_index
+        self.parent_dialog = parent
+    
+    def run(self):
+        """在后台线程中重新获取歌曲URL"""
+        try:
+            # 从歌曲URL中提取歌曲ID
+            song_url = self.song.get('url', '')
+            song_id = self.extract_song_id_from_url(song_url)
+            
+            if not song_id:
+                # 如果无法从URL提取ID，尝试通过歌曲名和艺术家搜索
+                song_name = self.song.get('name', '')
+                song_artist = self.song.get('artist', '')
+                song_id = self.search_song_id(song_name, song_artist)
+            
+            if not song_id:
+                self.refresh_failed.emit("无法获取歌曲ID")
+                return
+            
+            # 使用歌曲ID获取新的播放URL
+            new_url = self.get_song_url_by_id(song_id)
+            if new_url:
+                self.url_refreshed.emit(self.song_index, new_url)
+            else:
+                self.refresh_failed.emit("无法获取新的播放URL")
+                
+        except Exception as e:
+            self.refresh_failed.emit(f"刷新URL时出错: {e}")
+    
+    def extract_song_id_from_url(self, url):
+        """从歌曲对象中获取歌曲ID"""
+        try:
+            # 优先从歌曲对象中获取ID
+            if 'id' in self.song and self.song['id']:
+                return str(self.song['id'])
+            
+            # 如果歌曲对象中没有ID，返回None让程序使用搜索方法
+            return None
+        except Exception:
+            return None
+    
+    def search_song_id(self, song_name, song_artist):
+        """通过歌曲名和艺术家搜索歌曲ID"""
+        try:
+            search_keyword = f"{song_name} {song_artist}".strip()
+            search_url = f"https://163api.qijieya.cn/search?keywords={search_keyword}&type=1&limit=10"
+            
+            response = REQUESTS_SESSION.get(search_url, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            if data.get('code') == 200 and data.get('result', {}).get('songs'):
+                songs = data['result']['songs']
+                
+                # 寻找最匹配的歌曲
+                for song in songs:
+                    if (song.get('name', '').lower() == song_name.lower() and 
+                        any(ar.get('name', '').lower() == song_artist.lower() for ar in song.get('ar', []))):
+                        return str(song.get('id'))
+                
+                # 如果没有完全匹配，返回第一个结果
+                if songs:
+                    return str(songs[0].get('id'))
+            
+            return None
+        except Exception as e:
+            return None
+    
+    def get_song_url_by_id(self, song_id):
+        """通过歌曲ID获取播放URL"""
+        try:
+            url_api = f"https://163api.qijieya.cn/song/url?id={song_id}"
+            response = REQUESTS_SESSION.get(url_api, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            if data.get('code') == 200 and data.get('data'):
+                url_data = data['data'][0] if data['data'] else None
+                if url_data and url_data.get('url'):
+                    return url_data['url']
+            
+            return None
+        except Exception as e:
+            return None
+
 class AudioDownloadThread(QThread):
     """音频下载线程，避免UI卡顿"""
     download_finished = pyqtSignal(str, str)  # 信号：临时文件路径, 歌曲信息
@@ -1277,6 +1375,13 @@ class MusicPlayerDialog(QDialog):
         if self.parent_window:
             self.parent_window.log_message(error_message, error=True)
         
+        # 检查是否是403错误，如果是则尝试重新获取URL
+        if "403" in error_message or "HTTP状态码: 403" in error_message:
+            if self.parent_window:
+                self.parent_window.log_message("检测到403错误，可能是URL过期，尝试重新获取URL...", info=True)
+            self.refresh_current_song_url()
+            return
+        
         # 尝试使用系统播放器作为备用方案
         if self.songs and 0 <= self.current_index < len(self.songs):
             song = self.songs[self.current_index]
@@ -1291,6 +1396,52 @@ class MusicPlayerDialog(QDialog):
             # 只在50%和100%时输出日志，进一步减少日志量
             if self.parent_window and progress in [50, 100]:
                 self.parent_window.log_message(f"下载进度: {progress}% ({downloaded/1024:.1f}KB/{total/1024:.1f}KB)")
+    
+    def refresh_current_song_url(self):
+        """重新获取当前歌曲的URL（用于处理URL过期问题）"""
+        if not self.songs or not (0 <= self.current_index < len(self.songs)):
+            return
+        
+        song = self.songs[self.current_index]
+        song_name = song.get('name', 'Unknown')
+        song_artist = song.get('artist', 'Unknown')
+        
+        if self.parent_window:
+            self.parent_window.log_message(f"🔄 正在重新获取歌曲URL: {song_name} - {song_artist}")
+        
+        # 创建URL刷新线程
+        self.url_refresh_thread = UrlRefreshThread(song, self.current_index, self)
+        self.url_refresh_thread.url_refreshed.connect(self.on_url_refreshed)
+        self.url_refresh_thread.refresh_failed.connect(self.on_url_refresh_failed)
+        self.url_refresh_thread.start()
+    
+    def on_url_refreshed(self, song_index, new_url):
+        """URL刷新成功的处理"""
+        if song_index == self.current_index and 0 <= song_index < len(self.songs):
+            # 更新歌曲URL
+            old_url = self.songs[song_index]['url']
+            self.songs[song_index]['url'] = new_url
+            
+            # 从缓存中移除旧URL
+            if old_url in self.music_cache:
+                del self.music_cache[old_url]
+            
+            if self.parent_window:
+                self.parent_window.log_message(f"✅ URL刷新成功，重新开始播放", success=True)
+            
+            # 重新播放
+            self.play_new_song()
+    
+    def on_url_refresh_failed(self, error_message):
+        """URL刷新失败的处理"""
+        if self.parent_window:
+            self.parent_window.log_message(f"❌ URL刷新失败: {error_message}", error=True)
+            self.parent_window.log_message("尝试使用系统播放器作为备用方案", info=True)
+        
+        # 使用系统播放器作为最后的备用方案
+        if self.songs and 0 <= self.current_index < len(self.songs):
+            song = self.songs[self.current_index]
+            self.play_with_system_player(song['url'])
     
     def init_audio(self):
         """初始化音频系统"""
@@ -2521,6 +2672,8 @@ class CommandThread(QThread):
             self.process = QProcess()
             self.process.setProcessChannelMode(QProcess.MergedChannels)
             self.process.readyReadStandardOutput.connect(self.handle_output)
+            # 使用lambda来避免Qt信号参数类型问题
+            self.process.finished.connect(lambda exit_code: self.on_process_finished(exit_code))
             
             # 设置环境变量以确保正确的编码
             env = self.process.processEnvironment()
@@ -2529,12 +2682,14 @@ class CommandThread(QThread):
             self.process.setProcessEnvironment(env)
             
             # 启动进程 - 使用cmd执行命令，先设置代码页为UTF-8
-            full_command = f"chcp 65001 >nul 2>&1 && {expanded_command}"
+            full_command = f"chcp 65001 >nul && {expanded_command}"
             logging.debug(f"执行完整命令: {full_command}")
             self.process.start("cmd", ["/c", full_command])
             
             # 等待进程完成
             if self.process.waitForFinished(-1):
+                # 确保所有输出都被处理
+                self.handle_output()  # 处理剩余的输出
                 exit_code = self.process.exitCode()
                 logging.info(f"命令执行完成，退出代码: {exit_code}")
                 
@@ -2563,19 +2718,30 @@ class CommandThread(QThread):
     def handle_output(self):
         try:
             raw_data = self.process.readAllStandardOutput().data()
+            if not raw_data:
+                return  # 没有数据就返回
+                
+            logging.debug(f"收到原始数据: {len(raw_data)} 字节")
+            
             # 尝试多种编码方式
             for encoding in ['utf-8', 'gbk', 'cp936', 'gb2312']:
                 try:
                     data = raw_data.decode(encoding)
+                    logging.debug(f"使用编码 {encoding} 解码成功")
                     break
                 except UnicodeDecodeError:
                     continue
             else:
                 # 如果所有编码都失败，使用utf-8并忽略错误
                 data = raw_data.decode('utf-8', errors='ignore')
+                logging.debug("使用utf-8忽略错误解码")
         except Exception as e:
             data = f"编码错误: {str(e)}\n"
+            logging.error(f"handle_output异常: {e}")
             
+        # 记录输出内容用于调试
+        logging.debug(f"处理输出数据: {repr(data[:100])}{'...' if len(data) > 100 else ''}")
+        
         # 对输出进行颜色处理，只对特定类型的消息添加颜色标签
         if 'error' in data.lower() or 'failed' in data.lower() or 'exception' in data.lower():
             # 错误信息使用红色显示
@@ -2591,8 +2757,16 @@ class CommandThread(QThread):
             color = self.theme['accent_color'] if self.theme else '#3498db'
             data = f"<span style='color:{color}; font-weight:bold;'>{data}</span>"
         # 普通输出不添加颜色标签，让终端使用默认样式
-            
+        
+        logging.debug(f"发送输出信号: {repr(data[:100])}{'...' if len(data) > 100 else ''}")
         self.output_signal.emit(data)
+    
+    def on_process_finished(self, exit_code):
+        """进程完成时的回调"""
+        # 确保处理所有剩余的输出
+        logging.debug("进程完成，处理剩余输出")
+        self.handle_output()
+        logging.info(f"进程完成回调：退出代码={exit_code}")
         
     def stop(self):
         if self.process and self.process.state() != QProcess.NotRunning:
@@ -2716,8 +2890,23 @@ class CommandManager(QMainWindow):
     def init_ui(self):
         # 设置窗口属性
         self.setWindowTitle("命令管理器")
-        self.setMinimumSize(1200, 800)  # 增加窗口尺寸
-        self.resize(1400, 900)  # 设置默认大小
+        
+        # 获取屏幕尺寸并设置为40%
+        from PyQt5.QtWidgets import QDesktopWidget
+        screen_geometry = QDesktopWidget().availableGeometry()
+        screen_width = screen_geometry.width()
+        screen_height = screen_geometry.height()
+        
+        # 计算40%的屏幕尺寸
+        window_width = int(screen_width * 0.4)
+        window_height = int(screen_height * 0.4)
+        
+        # 设置最小尺寸为30%屏幕尺寸，确保界面可用性
+        min_width = int(screen_width * 0.3)
+        min_height = int(screen_height * 0.3)
+        
+        self.setMinimumSize(min_width, min_height)
+        self.resize(window_width, window_height)  # 设置默认大小为40%屏幕尺寸
         
         # 设置窗口图标
         self.set_window_icon()
@@ -5230,7 +5419,11 @@ class CommandManager(QMainWindow):
     def update_terminal(self, text):
         # 更新终端输出
         self.terminal.moveCursor(QTextCursor.End)
-        self.terminal.insertPlainText(text)
+        # 检查文本是否包含HTML标签，如果包含则使用insertHtml，否则使用insertPlainText
+        if '<span' in text or '</span>' in text:
+            self.terminal.insertHtml(text)
+        else:
+            self.terminal.insertPlainText(text)
         self.terminal.moveCursor(QTextCursor.End)
     
     def update_progress(self, value):
@@ -5245,7 +5438,7 @@ class CommandManager(QMainWindow):
         if hasattr(self, 'command_queue') and self.command_queue is not None:
             # 多命令执行模式
             if success:
-                self.log_message(f"命令 {self.current_command_index}/{self.total_commands} 执行成功", success=True)
+                # 命令执行成功，不显示日志消息
                 # 继续执行下一个命令
                 QTimer.singleShot(500, self.execute_next_command)
             else:
@@ -5273,8 +5466,8 @@ class CommandManager(QMainWindow):
         
         # 添加完成消息
         if success:
-            self.log_message(message, success=True)
-            self.progress_bar.setFormat("命令执行成功 100%")
+            # 命令执行成功，不显示日志消息
+            self.progress_bar.setFormat("执行完成 100%")
         else:
             self.log_message(message, error=True)
             self.progress_bar.setFormat("命令执行失败")
