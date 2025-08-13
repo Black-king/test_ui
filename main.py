@@ -2189,7 +2189,23 @@ class MusicPlayerDialog(QDialog):
             was_playing = self.is_playing
             # 先停止当前播放并清理临时文件
             self.stop_playback()
-            self.current_index = (self.current_index + 1) % len(self.songs)
+            
+            # 根据播放模式处理歌曲切换
+            if self.play_mode == 0:  # 顺序播放
+                if self.current_index >= len(self.songs) - 1:
+                    # 已经是最后一首，停止播放
+                    self.is_playing = False
+                    self.play_btn.setText("▶")
+                    self.progress_value = 0
+                    self.progress_bar.setValue(self.progress_value)
+                    if self.parent_window:
+                        self.parent_window.log_message("📻 顺序播放完毕，停止播放", info=True)
+                    return
+                else:
+                    self.current_index += 1
+            else:  # 单曲循环或其他模式
+                self.current_index = (self.current_index + 1) % len(self.songs)
+            
             self.update_song_info()
             # 更新歌曲列表的选中状态
             self.song_list.setCurrentRow(self.current_index)
@@ -2207,7 +2223,23 @@ class MusicPlayerDialog(QDialog):
             # 从当前显示的歌曲名中提取歌曲名（去掉歌手信息）
             current_song_name = self.current_song.split(' - ')[0] if ' - ' in self.current_song else self.current_song
             current_index = songs.index(current_song_name) if current_song_name in songs else 0
-            new_song = songs[(current_index + 1) % len(songs)]
+            
+            # 根据播放模式处理歌曲切换
+            if self.play_mode == 0:  # 顺序播放
+                if current_index >= len(songs) - 1:
+                    # 已经是最后一首，停止播放
+                    self.is_playing = False
+                    self.play_btn.setText("▶")
+                    self.progress_value = 0
+                    self.progress_bar.setValue(self.progress_value)
+                    if self.parent_window:
+                        self.parent_window.log_message("📻 顺序播放完毕，停止播放", info=True)
+                    return
+                else:
+                    new_song = songs[current_index + 1]
+            else:  # 单曲循环或其他模式
+                new_song = songs[(current_index + 1) % len(songs)]
+            
             self.current_song = new_song
             self.song_label.setText(self.current_song)
             self.progress_value = 0
@@ -2589,13 +2621,31 @@ class MusicPlayerDialog(QDialog):
                         # 如果音频正在播放，使用模拟进度（因为pygame.mixer.music没有直接的位置获取方法）
                         self.progress_value += 100.0 / 180.0  # 每秒增加约0.56%（180秒总时长）
                     else:
-                        # 音频已停止，停止播放而不是自动切换下一首
-                        self.is_playing = False
-                        self.play_btn.setText("▶")
-                        self.play_timer.stop()
-                        self.progress_value = 0
-                        self.progress_bar.setValue(0)
-                        return
+                        # 音频已停止，根据播放模式处理
+                        if self.play_mode == 1:  # 单曲循环
+                            # 重新开始播放当前歌曲
+                            self.progress_value = 0
+                            self.progress_bar.setValue(0)
+                            if self.parent_window:
+                                self.parent_window.log_message("🔄 单曲循环：重新播放当前歌曲", info=True)
+                            # 重新播放当前歌曲
+                            self.play_new_song()
+                            return
+                        else:  # 顺序播放
+                            # 自动播放下一首
+                            if self.songs and len(self.songs) > 1:
+                                if self.parent_window:
+                                    self.parent_window.log_message("▶▶ 顺序播放：自动播放下一首", info=True)
+                                self.next_song()
+                                return
+                            else:
+                                # 没有更多歌曲，停止播放
+                                self.is_playing = False
+                                self.play_btn.setText("▶")
+                                self.play_timer.stop()
+                                self.progress_value = 0
+                                self.progress_bar.setValue(0)
+                                return
                 except Exception as e:
                     # pygame调用出错，使用模拟进度
                     self.progress_value += 100.0 / 180.0
