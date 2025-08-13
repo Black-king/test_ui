@@ -10,9 +10,9 @@
     },
     {
         "name": "设备信息",
-        "command": "hdc target mount",
-        "type": "normal",
-        "icon": "info"
+        "command": "hdc target mount;\nhdc target mount",
+        "type": "terminal",
+        "icon": "terminal"
     },
     {
         "name": "上传文件",

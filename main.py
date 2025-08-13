@@ -2670,8 +2670,10 @@ class CommandThread(QThread):
             
             # 创建进程
             self.process = QProcess()
-            self.process.setProcessChannelMode(QProcess.MergedChannels)
+            # 分别处理标准输出和标准错误
+            self.process.setProcessChannelMode(QProcess.SeparateChannels)
             self.process.readyReadStandardOutput.connect(self.handle_output)
+            self.process.readyReadStandardError.connect(self.handle_output)
             # 使用lambda来避免Qt信号参数类型问题
             self.process.finished.connect(lambda exit_code: self.on_process_finished(exit_code))
             
@@ -2717,11 +2719,17 @@ class CommandThread(QThread):
     
     def handle_output(self):
         try:
-            raw_data = self.process.readAllStandardOutput().data()
+            # 读取标准输出
+            stdout_data = self.process.readAllStandardOutput().data()
+            stderr_data = self.process.readAllStandardError().data()
+            
+            # 合并所有数据
+            raw_data = stdout_data + stderr_data
+            
+            logging.debug(f"收到标准输出: {len(stdout_data)} 字节, 标准错误: {len(stderr_data)} 字节")
+            
             if not raw_data:
-                return  # 没有数据就返回
-                
-            logging.debug(f"收到原始数据: {len(raw_data)} 字节")
+                return  # 没有任何数据
             
             # 尝试多种编码方式
             for encoding in ['utf-8', 'gbk', 'cp936', 'gb2312']:
@@ -2742,24 +2750,26 @@ class CommandThread(QThread):
         # 记录输出内容用于调试
         logging.debug(f"处理输出数据: {repr(data[:100])}{'...' if len(data) > 100 else ''}")
         
-        # 对输出进行颜色处理，只对特定类型的消息添加颜色标签
-        if 'error' in data.lower() or 'failed' in data.lower() or 'exception' in data.lower():
-            # 错误信息使用红色显示
-            data = f"<span style='color:#e74c3c;'>{data}</span>"
-        elif 'warning' in data.lower():
-            # 警告信息使用黄色显示
-            data = f"<span style='color:#f39c12;'>{data}</span>"
-        elif 'success' in data.lower() or 'completed' in data.lower():
-            # 成功信息使用绿色显示
-            data = f"<span style='color:#2ecc71;'>{data}</span>"
-        elif data.strip().startswith('>'):
-            # 命令提示符使用蓝色显示
-            color = self.theme['accent_color'] if self.theme else '#3498db'
-            data = f"<span style='color:{color}; font-weight:bold;'>{data}</span>"
-        # 普通输出不添加颜色标签，让终端使用默认样式
-        
-        logging.debug(f"发送输出信号: {repr(data[:100])}{'...' if len(data) > 100 else ''}")
-        self.output_signal.emit(data)
+        # 确保有内容才发送信号
+        if data.strip():
+            # 对输出进行颜色处理，只对特定类型的消息添加颜色标签
+            if 'error' in data.lower() or 'failed' in data.lower() or 'exception' in data.lower():
+                # 错误信息使用红色显示
+                data = f"<span style='color:#e74c3c;'>{data}</span>"
+            elif 'warning' in data.lower():
+                # 警告信息使用黄色显示
+                data = f"<span style='color:#f39c12;'>{data}</span>"
+            elif 'success' in data.lower() or 'completed' in data.lower():
+                # 成功信息使用绿色显示
+                data = f"<span style='color:#2ecc71;'>{data}</span>"
+            elif data.strip().startswith('>'):
+                # 命令提示符使用蓝色显示
+                color = self.theme['accent_color'] if self.theme else '#3498db'
+                data = f"<span style='color:{color}; font-weight:bold;'>{data}</span>"
+            # 普通输出不添加颜色标签，让终端使用默认样式
+            
+            logging.debug(f"发送输出信号: {repr(data[:100])}{'...' if len(data) > 100 else ''}")
+            self.output_signal.emit(data)
     
     def on_process_finished(self, exit_code):
         """进程完成时的回调"""
@@ -2891,22 +2901,27 @@ class CommandManager(QMainWindow):
         # 设置窗口属性
         self.setWindowTitle("命令管理器")
         
-        # 获取屏幕尺寸并设置为40%
-        from PyQt5.QtWidgets import QDesktopWidget
-        screen_geometry = QDesktopWidget().availableGeometry()
+        # 获取屏幕尺寸并设置为合适的大小
+        screen = QApplication.primaryScreen()
+        screen_geometry = screen.availableGeometry()
         screen_width = screen_geometry.width()
         screen_height = screen_geometry.height()
         
-        # 计算40%的屏幕尺寸
-        window_width = int(screen_width * 0.4)
-        window_height = int(screen_height * 0.4)
-        
-        # 设置最小尺寸为30%屏幕尺寸，确保界面可用性
-        min_width = int(screen_width * 0.3)
-        min_height = int(screen_height * 0.3)
+        # 根据屏幕尺寸智能调整窗口大小
+        # 对于24寸及以上大屏幕，使用较小的百分比以避免窗口过大
+        if screen_width >= 1920:  # 大屏幕
+            window_width = min(int(screen_width * 0.35), 1600)  # 最大不超过1600px
+            window_height = min(int(screen_height * 0.4), 1000)  # 最大不超过1000px
+            min_width = min(int(screen_width * 0.25), 1200)
+            min_height = min(int(screen_height * 0.3), 800)
+        else:  # 小屏幕
+            window_width = int(screen_width * 0.4)
+            window_height = int(screen_height * 0.4)
+            min_width = int(screen_width * 0.3)
+            min_height = int(screen_height * 0.3)
         
         self.setMinimumSize(min_width, min_height)
-        self.resize(window_width, window_height)  # 设置默认大小为40%屏幕尺寸
+        self.resize(window_width, window_height)
         
         # 设置窗口图标
         self.set_window_icon()
@@ -3824,10 +3839,11 @@ class CommandManager(QMainWindow):
     
     def center_window(self):
         # 获取屏幕几何信息
-        screen_geometry = QDesktopWidget().availableGeometry()
+        screen = QApplication.primaryScreen()
+        screen_geometry = screen.availableGeometry()
         # 计算窗口居中位置
-        x = (screen_geometry.width() - self.width()) // 2
-        y = (screen_geometry.height() - self.height()) // 2
+        x = screen_geometry.x() + (screen_geometry.width() - self.width()) // 2
+        y = screen_geometry.y() + (screen_geometry.height() - self.height()) // 2
         # 移动窗口
         self.move(x, y)
     
@@ -5174,7 +5190,7 @@ class CommandManager(QMainWindow):
             self.progress_animation.start()
             
             # 检查是否包含多个命令（分号分隔）
-            if ';' in cmd_content and cmd_type == 'normal':
+            if ';' in cmd_content:
                 # 分割命令并依次执行
                 commands = [cmd.strip() for cmd in cmd_content.split(';') if cmd.strip()]
                 if len(commands) > 1:
@@ -7461,6 +7477,7 @@ if __name__ == "__main__":
         # 即使日志系统失败也继续运行
     
     # 设置环境变量以提高Qt稳定性
+    # 禁用自动DPI缩放以避免显示错乱
     os.environ['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
     os.environ['QT_SCALE_FACTOR'] = '1'
     
@@ -7469,6 +7486,9 @@ if __name__ == "__main__":
     
     try:
         logging.info("初始化QApplication...")
+        
+        # 使用更保守的DPI设置
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
         
         # 创建QApplication时使用更保守的参数
         app = QApplication(sys.argv)
