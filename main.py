@@ -2890,11 +2890,9 @@ class CommandManager(QMainWindow):
             logging.info("初始化UI...")
             self.init_ui()
             
-            logging.info("加载配置...")
-            self.load_config()
-            
-            logging.info("加载删除的命令...")
-            self.load_deleted_commands()
+            # 延迟加载非关键配置
+            logging.info("延迟加载配置文件...")
+            QTimer.singleShot(100, self.load_delayed_configs)
             
             logging.info("CommandManager初始化完成")
         except Exception as e:
@@ -2988,23 +2986,13 @@ class CommandManager(QMainWindow):
         screen_width = screen_geometry.width()
         screen_height = screen_geometry.height()
         
-        # 根据屏幕尺寸智能调整窗口大小
-        # 对于24寸及以上大屏幕，使用较小的百分比以避免窗口过大
-        if screen_width >= 1920:  # 大屏幕
-            window_width = min(int(screen_width * 0.35), 1600)  # 最大不超过1600px
-            window_height = min(int(screen_height * 0.4), 1000)  # 最大不超过1000px
-            min_width = min(int(screen_width * 0.25), 1200)
-            min_height = min(int(screen_height * 0.3), 800)
-        elif screen_width >= 1366:  # 中等屏幕
-            window_width = int(screen_width * 0.45)
-            window_height = int(screen_height * 0.45)
-            min_width = int(screen_width * 0.35)
-            min_height = int(screen_height * 0.35)
-        else:  # 小屏幕 (1366以下)
-            window_width = int(screen_width * 0.85)  # 小屏幕使用更大比例
-            window_height = int(screen_height * 0.8)
-            min_width = max(int(screen_width * 0.6), 800)  # 确保最小宽度不小于800
-            min_height = max(int(screen_height * 0.5), 600)  # 确保最小高度不小于600
+        # 设置窗口为屏幕尺寸的50%
+        window_width = int(screen_width * 0.5)
+        window_height = int(screen_height * 0.5)
+        
+        # 设置最小尺寸为屏幕尺寸的30%，确保窗口不会太小
+        min_width = max(int(screen_width * 0.3), 800)  # 最小宽度不小于800px
+        min_height = max(int(screen_height * 0.3), 600)  # 最小高度不小于600px
         
         self.setMinimumSize(min_width, min_height)
         self.resize(window_width, window_height)
@@ -3018,11 +3006,10 @@ class CommandManager(QMainWindow):
         # 设置毛玻璃效果
         self.setup_glass_effect()
         
-        # 设置赛博朋克风格样式
+        # 设置简化的样式表，提高启动速度
         self.setStyleSheet("""
             QMainWindow {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #0a0a0a, stop:0.5 #1a1a2e, stop:1 #16213e);
+                background-color: #1a1a2e;
             }
             QDialog {
                 background-color: #1a1a2e;
@@ -3033,8 +3020,7 @@ class CommandManager(QMainWindow):
                 font-family: 'Consolas', 'Monaco', monospace;
             }
             QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #1a1a2e, stop:1 #16213e);
+                background-color: #16213e;
                 color: #00ffff;
                 border: 2px solid #00ffff;
                 padding: 12px 20px;
@@ -3042,18 +3028,14 @@ class CommandManager(QMainWindow):
                 font-weight: 600;
                 font-size: 13px;
                 font-family: 'Consolas', 'Monaco', monospace;
-                /* text-shadow removed for Qt compatibility */
             }
             QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #00ffff, stop:1 #0099cc);
+                background-color: #00ffff;
                 border-color: #ff6b6b;
                 color: #000000;
-                /* text-shadow removed for Qt compatibility */
             }
             QPushButton:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ff6b6b, stop:1 #ee5a24);
+                background-color: #ff6b6b;
                 border-color: #ff6b6b;
                 color: #000000;
             }
@@ -3067,8 +3049,7 @@ class CommandManager(QMainWindow):
                 font-family: 'Consolas', 'Monaco', monospace;
             }
             QProgressBar::chunk {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #00ff00, stop:1 #00ffff);
+                background-color: #00ffff;
                 border-radius: 4px;
             }
             QScrollArea {
@@ -3077,8 +3058,7 @@ class CommandManager(QMainWindow):
                 background-color: #1a1a2e;
             }
             QSplitter::handle {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #00ffff, stop:0.5 #ff6b6b, stop:1 #00ffff);
+                background-color: #00ffff;
                 border-radius: 3px;
             }
             QComboBox, QLineEdit {
@@ -3092,7 +3072,6 @@ class CommandManager(QMainWindow):
             }
             QComboBox:focus, QLineEdit:focus {
                 border-color: #ff6b6b;
-                /* text-shadow removed for Qt compatibility */
             }
         """)
         
@@ -3187,10 +3166,11 @@ class CommandManager(QMainWindow):
         self.time_label.setFixedHeight(self.header_control_height)
         self.update_time()
         
-        # 创建定时器更新时间
+        # 创建定时器更新时间（延迟启动）
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_time)
-        self.timer.start(1000)  # 每秒更新一次
+        # 延迟启动定时器，提高启动速度
+        self.timer_start_delayed = True
         
         # 诗句轮播：每3分钟更换一次
         self.poems = [
@@ -3220,7 +3200,8 @@ class CommandManager(QMainWindow):
         self.update_poem()
         self.poem_timer = QTimer(self)
         self.poem_timer.timeout.connect(self.update_poem)
-        self.poem_timer.start(3 * 60 * 1000)  # 3分钟
+        # 延迟启动诗句轮播定时器，提高启动速度
+        self.poem_timer_start_delayed = True
         
         title_layout.addWidget(self.time_label)
         
@@ -3348,20 +3329,8 @@ class CommandManager(QMainWindow):
         left_layout.setContentsMargins(20, 20, 20, 20)
         left_layout.setSpacing(15)
         
-        # 添加粒子动画效果到左侧面板
-        self.left_particle_effect = ParticleEffect(left_panel)
-        self.left_particle_effect.setGeometry(0, 0, left_panel.width(), left_panel.height())
-        self.left_particle_effect.lower()  # 确保在其他控件下方
-        # 根据当前主题设置动效类型
-        if self.current_theme == 'dark':
-            self.left_particle_effect.set_effect('forest_fireflies')
-        elif self.current_theme == 'amoled':
-            self.left_particle_effect.set_effect('cherry_blossom')
-        elif self.current_theme == 'nord':
-            self.left_particle_effect.set_effect('wave_ripples')
-        else:
-            self.left_particle_effect.set_effect('floating_orbs')
-        self.left_particle_effect.show()
+        # 延迟加载粒子动画效果，提高启动速度
+        self.left_panel_ref = left_panel  # 保存引用用于延迟初始化
         
         # 命令区域标题
         commands_header_widget = QWidget()
@@ -3583,20 +3552,8 @@ class CommandManager(QMainWindow):
         right_layout.setContentsMargins(20, 20, 20, 20)
         right_layout.setSpacing(15)
         
-        # 添加粒子动画效果到右侧面板
-        self.right_particle_effect = ParticleEffect(right_panel)
-        self.right_particle_effect.setGeometry(0, 0, right_panel.width(), right_panel.height())
-        self.right_particle_effect.lower()  # 确保在其他控件下方
-        # 根据当前主题设置动效类型
-        if self.current_theme == 'dark':
-            self.right_particle_effect.set_effect('forest_fireflies')
-        elif self.current_theme == 'amoled':
-            self.right_particle_effect.set_effect('cherry_blossom')
-        elif self.current_theme == 'nord':
-            self.right_particle_effect.set_effect('wave_ripples')
-        else:
-            self.right_particle_effect.set_effect('floating_orbs')
-        self.right_particle_effect.show()
+        # 延迟加载粒子动画效果，提高启动速度
+        self.right_panel_ref = right_panel  # 保存引用用于延迟初始化
         
         # 终端区域标题
         terminal_header_widget = QWidget()
@@ -3777,15 +3734,46 @@ class CommandManager(QMainWindow):
     
     def init_particle_effects(self):
         """延迟初始化粒子效果"""
-        if hasattr(self, 'left_particle_effect'):
-            self.left_particle_effect.setGeometry(0, 0, self.left_particle_effect.parent().width(), self.left_particle_effect.parent().height())
-            self.left_particle_effect.particles.clear()
-            self.left_particle_effect.init_particles()
+        # 创建左侧粒子效果
+        if hasattr(self, 'left_panel_ref') and not hasattr(self, 'left_particle_effect'):
+            self.left_particle_effect = ParticleEffect(self.left_panel_ref)
+            self.left_particle_effect.setGeometry(0, 0, self.left_panel_ref.width(), self.left_panel_ref.height())
+            self.left_particle_effect.lower()  # 确保在其他控件下方
+            # 根据当前主题设置动效类型
+            if self.current_theme == 'dark':
+                self.left_particle_effect.set_effect('forest_fireflies')
+            elif self.current_theme == 'amoled':
+                self.left_particle_effect.set_effect('cherry_blossom')
+            elif self.current_theme == 'nord':
+                self.left_particle_effect.set_effect('wave_ripples')
+            else:
+                self.left_particle_effect.set_effect('floating_orbs')
+            self.left_particle_effect.show()
         
-        if hasattr(self, 'right_particle_effect'):
-            self.right_particle_effect.setGeometry(0, 0, self.right_particle_effect.parent().width(), self.right_particle_effect.parent().height())
-            self.right_particle_effect.particles.clear()
-            self.right_particle_effect.init_particles()
+        # 创建右侧粒子效果
+        if hasattr(self, 'right_panel_ref') and not hasattr(self, 'right_particle_effect'):
+            self.right_particle_effect = ParticleEffect(self.right_panel_ref)
+            self.right_particle_effect.setGeometry(0, 0, self.right_panel_ref.width(), self.right_panel_ref.height())
+            self.right_particle_effect.lower()  # 确保在其他控件下方
+            # 根据当前主题设置动效类型
+            if self.current_theme == 'dark':
+                self.right_particle_effect.set_effect('forest_fireflies')
+            elif self.current_theme == 'amoled':
+                self.right_particle_effect.set_effect('cherry_blossom')
+            elif self.current_theme == 'nord':
+                self.right_particle_effect.set_effect('wave_ripples')
+            else:
+                self.right_particle_effect.set_effect('floating_orbs')
+            self.right_particle_effect.show()
+        
+        # 启动延迟的定时器
+        if hasattr(self, 'timer_start_delayed') and self.timer_start_delayed:
+            self.timer.start(1000)  # 每秒更新一次
+            self.timer_start_delayed = False
+        
+        if hasattr(self, 'poem_timer_start_delayed') and self.poem_timer_start_delayed:
+            self.poem_timer.start(3 * 60 * 1000)  # 3分钟
+            self.poem_timer_start_delayed = False
     
     def on_splitter_moved(self, pos, index):
         """分割器移动时更新粒子效果"""
@@ -3854,6 +3842,19 @@ class CommandManager(QMainWindow):
                         self.current_theme = theme_key
         except Exception:
             pass
+    
+    def load_delayed_configs(self):
+        """延迟加载非关键配置"""
+        try:
+            logging.info("加载命令配置...")
+            self.load_config()
+            
+            logging.info("加载删除的命令...")
+            self.load_deleted_commands()
+            
+            logging.info("延迟配置加载完成")
+        except Exception as e:
+            logging.error(f"延迟配置加载失败: {e}", exc_info=True)
 
     def save_ui_settings(self):
         # 保存UI偏好（主题）
@@ -7569,6 +7570,53 @@ class RecycleBinDialog(QDialog):
             logging.error(error_msg, exc_info=True)
             QMessageBox.critical(self, "错误", error_msg)
 
+# 简单的启动画面类
+class SplashScreen(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(400, 200)
+        
+        # 居中显示
+        screen = QApplication.desktop().screenGeometry()
+        self.move((screen.width() - self.width()) // 2, (screen.height() - self.height()) // 2)
+        
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
+        
+        # 标题
+        title = QLabel("命令管理器")
+        title.setStyleSheet("""
+            color: #00ffff;
+            font-size: 24px;
+            font-weight: bold;
+            font-family: 'Consolas', 'Monaco', monospace;
+            margin-bottom: 20px;
+        """)
+        title.setAlignment(Qt.AlignCenter)
+        
+        # 加载提示
+        loading = QLabel("正在启动...")
+        loading.setStyleSheet("""
+            color: #ffffff;
+            font-size: 14px;
+            font-family: 'Consolas', 'Monaco', monospace;
+        """)
+        loading.setAlignment(Qt.AlignCenter)
+        
+        layout.addWidget(title)
+        layout.addWidget(loading)
+        
+        # 背景样式
+        self.setStyleSheet("""
+            QWidget {
+                background-color: rgba(26, 26, 46, 200);
+                border: 2px solid #00ffff;
+                border-radius: 10px;
+            }
+        """)
+
 # 程序入口
 if __name__ == "__main__":
     import os
@@ -7602,6 +7650,7 @@ if __name__ == "__main__":
     
     app = None
     window = None
+    splash = None
     
     try:
         logging.info("初始化QApplication...")
@@ -7614,6 +7663,11 @@ if __name__ == "__main__":
         app.setAttribute(Qt.AA_DisableWindowContextHelpButton, True)
         app.setQuitOnLastWindowClosed(True)
         
+        # 显示启动画面
+        splash = SplashScreen()
+        splash.show()
+        app.processEvents()  # 确保启动画面显示
+        
         logging.info("创建CommandManager主窗口...")
         try:
             window = CommandManager()
@@ -7621,6 +7675,10 @@ if __name__ == "__main__":
         except Exception as e:
             logging.error(f"CommandManager创建失败: {e}", exc_info=True)
             raise
+        
+        # 关闭启动画面
+        if splash:
+            splash.close()
         
         logging.info("显示主窗口...")
         try:
