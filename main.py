@@ -1499,7 +1499,21 @@ class MusicPlayerDialog(QDialog):
     
     def init_ui(self):
         self.setWindowTitle("🎵 Cyber Music Player")
-        self.setFixedSize(480, 700)  # 调整窗口尺寸以适应新布局
+        
+        # 根据屏幕尺寸动态调整窗口大小
+        screen = QApplication.primaryScreen()
+        screen_geometry = screen.availableGeometry()
+        screen_width = screen_geometry.width()
+        screen_height = screen_geometry.height()
+        
+        if screen_width < 1366:  # 小屏幕
+            window_width = min(400, int(screen_width * 0.8))
+            window_height = min(600, int(screen_height * 0.8))
+        else:  # 大屏幕
+            window_width = 480
+            window_height = 700
+        
+        self.setFixedSize(window_width, window_height)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         
         # 设置窗口图标
@@ -2708,6 +2722,7 @@ class CommandThread(QThread):
         self.command = command
         self.process = None
         self.theme = theme
+        self._has_output = False  # 初始化输出标记
         
     def run(self):
         try:
@@ -2800,8 +2815,8 @@ class CommandThread(QThread):
         # 记录输出内容用于调试
         logging.debug(f"处理输出数据: {repr(data[:100])}{'...' if len(data) > 100 else ''}")
         
-        # 确保有内容才发送信号
-        if data.strip():
+        # 发送所有数据，包括空白内容
+        if data:
             # 对输出进行颜色处理，只对特定类型的消息添加颜色标签
             if 'error' in data.lower() or 'failed' in data.lower() or 'exception' in data.lower():
                 # 错误信息使用红色显示
@@ -2819,13 +2834,29 @@ class CommandThread(QThread):
             # 普通输出不添加颜色标签，让终端使用默认样式
             
             logging.debug(f"发送输出信号: {repr(data[:100])}{'...' if len(data) > 100 else ''}")
+            self._has_output = True  # 标记已有输出
             self.output_signal.emit(data)
+        else:
+            logging.debug("收到空数据，跳过发送")
     
     def on_process_finished(self, exit_code):
         """进程完成时的回调"""
         # 确保处理所有剩余的输出
         logging.debug("进程完成，处理剩余输出")
         self.handle_output()
+        
+        # 如果命令成功但没有输出，显示完成信息
+        if exit_code == 0:
+            # 检查是否有输出被发送过
+            if not hasattr(self, '_has_output'):
+                self._has_output = False
+            
+            if not self._has_output:
+                # 没有输出的成功命令，显示完成提示
+                completion_msg = "命令执行完成（无输出）\n"
+                logging.debug(f"发送完成信号: {completion_msg}")
+                self.output_signal.emit(completion_msg)
+        
         logging.info(f"进程完成回调：退出代码={exit_code}")
         
     def stop(self):
@@ -2964,11 +2995,16 @@ class CommandManager(QMainWindow):
             window_height = min(int(screen_height * 0.4), 1000)  # 最大不超过1000px
             min_width = min(int(screen_width * 0.25), 1200)
             min_height = min(int(screen_height * 0.3), 800)
-        else:  # 小屏幕
-            window_width = int(screen_width * 0.4)
-            window_height = int(screen_height * 0.4)
-            min_width = int(screen_width * 0.3)
-            min_height = int(screen_height * 0.3)
+        elif screen_width >= 1366:  # 中等屏幕
+            window_width = int(screen_width * 0.45)
+            window_height = int(screen_height * 0.45)
+            min_width = int(screen_width * 0.35)
+            min_height = int(screen_height * 0.35)
+        else:  # 小屏幕 (1366以下)
+            window_width = int(screen_width * 0.85)  # 小屏幕使用更大比例
+            window_height = int(screen_height * 0.8)
+            min_width = max(int(screen_width * 0.6), 800)  # 确保最小宽度不小于800
+            min_height = max(int(screen_height * 0.5), 600)  # 确保最小高度不小于600
         
         self.setMinimumSize(min_width, min_height)
         self.resize(window_width, window_height)
@@ -3069,9 +3105,11 @@ class CommandManager(QMainWindow):
         main_layout.setContentsMargins(15, 8, 15, 15)  # 减少上边距
         main_layout.setSpacing(8)  # 减少间距
         
-        # 简洁的标题栏
+        # 简洁的标题栏 - 根据屏幕尺寸调整高度
         title_widget = QWidget()
-        title_widget.setFixedHeight(120)  # 继续增加高度确保上下边距一致
+        # 小屏幕使用更小的标题栏高度
+        title_height = 80 if screen_width < 1366 else 120
+        title_widget.setFixedHeight(title_height)
         title_widget.setStyleSheet("""
             QWidget {
                 background: transparent;
@@ -3083,8 +3121,8 @@ class CommandManager(QMainWindow):
         title_layout = QHBoxLayout(title_widget)
         title_layout.setContentsMargins(20, 22, 20, 22)  # 调整内边距以统一视觉高度
         title_layout.setAlignment(Qt.AlignVCenter)  # 设置垂直居中对齐
-        # 标题栏控件统一高度，保证两侧等高
-        self.header_control_height = 56
+        # 标题栏控件统一高度，保证两侧等高 - 根据屏幕尺寸调整
+        self.header_control_height = 40 if screen_width < 1366 else 56
         
         # 主题切换按钮 + 下拉菜单
         self.theme_button = QPushButton(self.themes[self.current_theme]['name'] + " THEME")
@@ -3693,10 +3731,18 @@ class CommandManager(QMainWindow):
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
         
-        # 设置分割器比例 (左侧:右侧 = 2:3)
-        splitter.setSizes([500, 750])
-        splitter.setStretchFactor(0, 2)  # 左侧面板拉伸因子
-        splitter.setStretchFactor(1, 3)  # 右侧面板拉伸因子
+        # 设置分割器比例 - 根据屏幕尺寸动态调整
+        if screen_width < 1366:  # 小屏幕
+            # 小屏幕使用更平衡的比例，避免某一侧过小
+            left_size = int(window_width * 0.4)
+            right_size = int(window_width * 0.6)
+            splitter.setSizes([left_size, right_size])
+            splitter.setStretchFactor(0, 2)  # 左侧面板拉伸因子
+            splitter.setStretchFactor(1, 3)  # 右侧面板拉伸因子
+        else:  # 大屏幕
+            splitter.setSizes([500, 750])
+            splitter.setStretchFactor(0, 2)  # 左侧面板拉伸因子
+            splitter.setStretchFactor(1, 3)  # 右侧面板拉伸因子
         
         # 状态栏
         self.statusBar().showMessage("就绪")
@@ -4810,17 +4856,30 @@ class CommandManager(QMainWindow):
         # 更新命令计数
         self.commands_count.setText(f"({len(self.commands)} 个命令)")
         
+        # 获取屏幕尺寸信息以调整按钮大小
+        screen = QApplication.primaryScreen()
+        screen_geometry = screen.availableGeometry()
+        screen_width = screen_geometry.width()
+        
+        # 根据屏幕尺寸设置按钮尺寸
+        if screen_width < 1366:  # 小屏幕
+            button_min_width = 60
+            button_min_height = 40
+            button_width_spacing = 70  # 按钮宽度 + 间距
+        else:  # 大屏幕
+            button_min_width = 75
+            button_min_height = 50
+            button_width_spacing = 85  # 按钮宽度 + 间距
+        
         # 动态计算列数，实现响应式布局
         left_panel = self.findChild(QWidget, "leftPanel")
         if left_panel:
             panel_width = left_panel.width()
-            # 按钮宽度75px + 间距10px + 边距，计算能容纳的列数
-            button_width = 75 + 10  # 按钮宽度 + 间距
             available_width = panel_width - 40  # 减去左右边距
             # 更严格的列数计算，确保在较小宽度时减少列数
-            if available_width < 150:  # 很小的宽度，使用1列
+            if available_width < button_width_spacing * 2:  # 很小的宽度，使用1列
                 columns = 1
-            elif available_width < 300:  # 中等宽度，使用2列
+            elif available_width < button_width_spacing * 3:  # 中等宽度，使用2列
                 columns = 2
             else:  # 较大宽度，使用3列
                 columns = 3
@@ -4836,7 +4895,7 @@ class CommandManager(QMainWindow):
             
             # 创建按钮
             btn = QPushButton(cmd['name'])
-            btn.setMinimumSize(75, 50)  # 进一步减小按钮尺寸，适应极小界面
+            btn.setMinimumSize(button_min_width, button_min_height)  # 根据屏幕尺寸动态调整按钮尺寸
             # 稳定优先：不使用不透明度效果，直接显示
             
             # 为按钮添加符号图标
@@ -4856,6 +4915,8 @@ class CommandManager(QMainWindow):
             tooltip_border = theme.get('accent_color', '#00ffff')
             # 设置按钮样式（不包括工具提示样式）
             theme = self.themes[self.current_theme]
+            # 根据屏幕尺寸调整字体大小
+            font_size = 10 if screen_width < 1366 else 12
             button_style = f"""
             QPushButton {{
                 background: {theme['button_bg']};
@@ -4864,10 +4925,10 @@ class CommandManager(QMainWindow):
                 border-radius: 12px;
                 padding: 6px 4px;
                 font-weight: 600;
-                font-size: 12px;
+                font-size: {font_size}px;
                 font-family: 'Arial', 'Microsoft YaHei', sans-serif;
                 text-align: center;
-                min-height: 40px;
+                min-height: {button_min_height}px;
             }}
             QPushButton:hover {{
                 background: {'qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 ' + theme['button_hover'] + ', stop:1 rgba(0, 255, 255, 0.3))' if self.current_theme == 'cyber' else theme['button_hover']};
@@ -6084,7 +6145,11 @@ class CommandManagerDialog(QDialog):
         # 添加扩展按钮
         expand_btn = QPushButton("📝")
         expand_btn.setToolTip("扩大输入框")
-        expand_btn.setFixedSize(30, 30)
+        # 根据屏幕尺寸设置按钮大小
+        screen = QApplication.primaryScreen()
+        screen_width = screen.availableGeometry().width()
+        btn_size = 25 if screen_width < 1366 else 30
+        expand_btn.setFixedSize(btn_size, btn_size)
         expand_btn.clicked.connect(self.expand_command_input)
         command_row_layout.addWidget(expand_btn)
         
@@ -6116,7 +6181,7 @@ class CommandManagerDialog(QDialog):
         # 添加扩展按钮
         start_expand_btn = QPushButton("📝")
         start_expand_btn.setToolTip("扩大输入框")
-        start_expand_btn.setFixedSize(30, 30)
+        start_expand_btn.setFixedSize(btn_size, btn_size)
         start_expand_btn.clicked.connect(lambda: self._expand_input_field(self.start_command_input))
         start_command_row_layout.addWidget(start_expand_btn)
         
@@ -6134,7 +6199,7 @@ class CommandManagerDialog(QDialog):
         # 添加扩展按钮
         stop_expand_btn = QPushButton("📝")
         stop_expand_btn.setToolTip("扩大输入框")
-        stop_expand_btn.setFixedSize(30, 30)
+        stop_expand_btn.setFixedSize(btn_size, btn_size)
         stop_expand_btn.clicked.connect(lambda: self._expand_input_field(self.stop_command_input))
         stop_command_row_layout.addWidget(stop_expand_btn)
         
@@ -6152,7 +6217,7 @@ class CommandManagerDialog(QDialog):
         # 添加扩展按钮
         export_expand_btn = QPushButton("📝")
         export_expand_btn.setToolTip("扩大输入框")
-        export_expand_btn.setFixedSize(30, 30)
+        export_expand_btn.setFixedSize(btn_size, btn_size)
         export_expand_btn.clicked.connect(lambda: self._expand_input_field(self.export_command_input))
         export_command_row_layout.addWidget(export_expand_btn)
         
@@ -6836,7 +6901,11 @@ class CommandManagerDialog(QDialog):
         
         start_expand_btn = QPushButton("📝")
         start_expand_btn.setToolTip("扩大输入框")
-        start_expand_btn.setFixedSize(30, 30)
+        # 根据屏幕尺寸设置按钮大小
+        screen = QApplication.primaryScreen()
+        screen_width = screen.availableGeometry().width()
+        btn_size = 25 if screen_width < 1366 else 30
+        start_expand_btn.setFixedSize(btn_size, btn_size)
         start_expand_btn.clicked.connect(lambda: self._expand_input_field(start_command_input, dialog))
         start_row_layout.addWidget(start_expand_btn)
         
@@ -6848,7 +6917,7 @@ class CommandManagerDialog(QDialog):
         
         stop_expand_btn = QPushButton("📝")
         stop_expand_btn.setToolTip("扩大输入框")
-        stop_expand_btn.setFixedSize(30, 30)
+        stop_expand_btn.setFixedSize(btn_size, btn_size)
         stop_expand_btn.clicked.connect(lambda: self._expand_input_field(stop_command_input, dialog))
         stop_row_layout.addWidget(stop_expand_btn)
         
@@ -6860,7 +6929,7 @@ class CommandManagerDialog(QDialog):
         
         export_expand_btn = QPushButton("📝")
         export_expand_btn.setToolTip("扩大输入框")
-        export_expand_btn.setFixedSize(30, 30)
+        export_expand_btn.setFixedSize(btn_size, btn_size)
         export_expand_btn.clicked.connect(lambda: self._expand_input_field(export_command_input, dialog))
         export_row_layout.addWidget(export_expand_btn)
         
@@ -6896,7 +6965,7 @@ class CommandManagerDialog(QDialog):
         # 添加扩展按钮
         expand_btn = QPushButton("📝")
         expand_btn.setToolTip("扩大输入框")
-        expand_btn.setFixedSize(30, 30)
+        expand_btn.setFixedSize(btn_size, btn_size)
         
         # 为编辑对话框创建扩展功能
         expand_btn.clicked.connect(lambda: self._expand_input_field(command_input, dialog))
